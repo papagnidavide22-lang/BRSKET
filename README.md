@@ -9,6 +9,12 @@ Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che
 
 Poi Brsket si aggiorna da sola.
 
+## Novità della 7.3
+- **Scheda tecnica completa, come MediaInfo**: profilo e livello (es. Main@L5), CABAC e fotogrammi di riferimento, struttura del GOP (M e N), modalità frame rate, bit per pixel, dimensione e percentuale di ogni traccia, formato HDR (SMPTE ST 2086, PQ, HLG, Dolby Vision, HDR10+) con primari e luminanza del display di mastering e MaxCLL/MaxFALL, coefficienti matrice, intervallo colore, casella di configurazione del codec.
+- Audio: impostazioni del PCM (little/big endian, signed), ID codec, modalità bitrate, profondità bit e dimensione della traccia.
+- **Traccia timecode**: timecode del primo e dell'ultimo fotogramma, drop frame.
+- **Dati di ripresa** di Blackmagic e Final Cut (bobina, scena, ripresa, ambiente, giorno/notte, data di registrazione…) con nomi leggibili.
+
 ## Novità della 7.2
 - **Ritaglio scelto da te**: con Ritaglio (proporzioni 9:16, 1:1, 4:5 o misura su misura) compare l'anteprima del video con sopra il riquadro della misura finale. Lo trascini dove vuoi, con lo zoom prendi una parte più piccola, con il cursore cambi fotogramma per controllare. Con Bande nere fa tutto Brsket.
 - Il menu "Immagine" ora si chiama **Aspetto**.

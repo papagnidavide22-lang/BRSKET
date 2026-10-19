@@ -1128,72 +1128,219 @@ const human = {
   date: (d: string) => { const m = String(d || "").match(/^(\d{4})-?(\d{2})-?(\d{2})(?:[T ](\d{2}):(\d{2}))?/); return m ? `${m[3]}/${m[2]}/${m[1]}${m[4] ? ` ${m[4]}:${m[5]}` : ""}` : String(d || ""); },
 };
 const CH_NAME: Record<number, string> = { 1: "Mono", 2: "Stereo", 3: "2.1", 4: "4.0", 5: "5.0", 6: "5.1", 7: "6.1", 8: "7.1", 10: "7.1.2", 12: "7.1.4", 16: "9.1.6", 24: "22.2" };
-const rowsOf = (pairs: [string, unknown][]): Row[] => pairs.filter(([, v]) => v !== undefined && v !== null && v !== "" && v !== "N/A" && v !== "unknown").map(([k, v]) => [k, String(v)]);
+const clean = (v: unknown) => String(v).replace(/[\x00-\x1f\x7f]/g, "").trim();
+const rowsOf = (pairs: [string, unknown][]): Row[] => pairs.map(([k, v]) => [k, v == null ? "" : clean(v)] as Row).filter(([, v]) => v !== "" && v !== "N/A" && v !== "unknown");
 function pixInfo(p: string) {
   const bits = (p.match(/p(\d{2})(le|be)?$/) || [])[1] || (/^(rgb48|bgr48|rgba64|gray16)/.test(p) ? "16" : /f32/.test(p) ? "32 (float)" : p ? "8" : "");
   const sub = /444|gbr|rgb|bgr|argb|abgr/.test(p) ? "4:4:4" : /422/.test(p) ? "4:2:2" : /420|nv12|p010/.test(p) ? "4:2:0" : /411/.test(p) ? "4:1:1" : "";
   const alpha = /a(444|422|420)|rgba|bgra|argb|abgr|yuva|gbrap|ya/.test(p);
   return { bits, sub, alpha };
 }
+// ----- analisi del flusso (come MediaInfo): SPS/PPS H.264, GOP, HDR, timecode -----
+function hexOf(dump: string): Uint8Array {
+  const hex = String(dump || "").split("\n").map((l) => (l.match(/^[0-9a-f]{8}:\s+((?:[0-9a-f]{2,4}\s)+)/i) || [])[1] || "").join("").replace(/\s+/g, "");
+  return new Uint8Array((hex.match(/../g) || []).map((h) => parseInt(h, 16)));
+}
+class Bits {
+  i = 0; constructor(public b: Uint8Array) {}
+  bit() { const v = (this.b[this.i >> 3] >> (7 - (this.i & 7))) & 1; this.i++; return v; }
+  n(k: number) { let v = 0; for (let x = 0; x < k; x++) v = v * 2 + this.bit(); return v; }
+  ue() { let z = 0; while (this.bit() === 0 && z < 32) z++; return (2 ** z - 1) + this.n(z); }
+  se() { const k = this.ue(); return k % 2 ? (k + 1) / 2 : -k / 2; }
+}
+const unescape = (nal: Uint8Array) => { const o: number[] = []; for (let i = 0; i < nal.length; i++) { if (i > 1 && nal[i] === 3 && nal[i - 1] === 0 && nal[i - 2] === 0) continue; o.push(nal[i]); } return new Uint8Array(o); };
+// avcC (H.264 nel contenitore): numero di fotogrammi di riferimento e CABAC
+function avcConfig(x: Uint8Array): { refs?: number; cabac?: boolean; interlaced?: boolean } {
+  try {
+    if (x[0] !== 1) return {};
+    let p = 5; const nSps = x[p++] & 31; const out: { refs?: number; cabac?: boolean; interlaced?: boolean } = {};
+    for (let k = 0; k < nSps; k++) {
+      const len = (x[p] << 8) | x[p + 1]; p += 2; const sps = unescape(x.slice(p + 1, p + len)); p += len;
+      if (k) continue;
+      const b = new Bits(sps); const prof = b.n(8); b.n(16); b.ue();
+      if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(prof)) {
+        const cf = b.ue(); if (cf === 3) b.bit(); b.ue(); b.ue(); b.bit();
+        if (b.bit()) for (let l = 0; l < (cf !== 3 ? 8 : 12); l++) if (b.bit()) { let last = 8, next = 8; for (let j = 0; j < (l < 6 ? 16 : 64); j++) { if (next) next = (last + b.se() + 256) % 256; last = next || last; } }
+      }
+      b.ue(); const poc = b.ue();
+      if (poc === 0) b.ue(); else if (poc === 1) { b.bit(); b.se(); b.se(); const c = b.ue(); for (let j = 0; j < c; j++) b.se(); }
+      out.refs = b.ue(); b.bit(); b.ue(); b.ue(); out.interlaced = b.bit() === 0;
+    }
+    const nPps = x[p++];
+    if (nPps) { p += 2; const b = new Bits(unescape(x.slice(p + 1))); b.ue(); b.ue(); out.cabac = b.bit() === 1; }
+    return out;
+  } catch { return {}; }
+}
+// i primi 300 fotogrammi: struttura del GOP (M = distanza tra fotogrammi I/P, N = distanza tra fotogrammi chiave) e metadati HDR
+async function frameScan(path: string, pre: string[]) {
+  const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const r = await new Deno.Command(FFPROBE, { args: ["-v", "error", ...pre, "-read_intervals", "%+#300", "-select_streams", "v:0", "-show_entries", "frame=pict_type,key_frame,interlaced_frame,top_field_first:frame_side_data", "-of", "json", path],
+      stdout: "piped", stderr: "null", signal: ctl.signal }).output();
+    // deno-lint-ignore no-explicit-any
+    const fr = (JSON.parse(new TextDecoder().decode(r.stdout) || "{}").frames || []) as any[];
+    if (!fr.length) return null;
+    const keys = fr.map((f, i) => f.key_frame ? i : -1).filter((i) => i >= 0);
+    const N = keys.length > 1 ? keys[1] - keys[0] : null;
+    const anchors = fr.map((f, i) => f.pict_type !== "B" ? i : -1).filter((i) => i >= 0);
+    const gaps = anchors.slice(1).map((v, i) => v - anchors[i]);
+    const M = gaps.length ? Math.max(...gaps) : 1;
+    const allI = fr.every((f) => f.pict_type === "I");
+    // deno-lint-ignore no-explicit-any
+    const side = (fr[0].side_data_list || []) as any[];
+    return { N, M, allI, count: fr.length, interlaced: fr.some((f) => f.interlaced_frame), tff: fr.find((f) => f.interlaced_frame)?.top_field_first,
+      mastering: side.find((x) => /Mastering display/i.test(x.side_data_type)), light: side.find((x) => /Content light/i.test(x.side_data_type)),
+      dovi: side.some((x) => /DOVI|Dolby Vision/i.test(x.side_data_type)), hdr10plus: side.some((x) => /HDR10\+|HDR Dynamic Metadata SMPTE2094-40/i.test(x.side_data_type)) };
+  } catch { return null; } finally { clearTimeout(tm); }
+}
+const frac = (s: string) => { const [a, b] = String(s || "0/1").split("/").map(Number); return b ? a / b : a; };
+function primariesName(m: Record<string, string>) {
+  const R = [frac(m.red_x), frac(m.red_y)], G = [frac(m.green_x), frac(m.green_y)];
+  const near = (a: number[], b: number[]) => Math.abs(a[0] - b[0]) < 0.01 && Math.abs(a[1] - b[1]) < 0.01;
+  if (near(R, [0.708, 0.292]) && near(G, [0.17, 0.797])) return "BT.2020";
+  if (near(R, [0.68, 0.32]) && near(G, [0.265, 0.69])) return "Display P3";
+  if (near(R, [0.64, 0.33]) && near(G, [0.3, 0.6])) return "BT.709";
+  return `R ${R.map((n) => n.toFixed(3)).join(",")} · G ${G.map((n) => n.toFixed(3)).join(",")}`;
+}
+const LANGS: Record<string, string> = { ita: "Italiano", it: "Italiano", eng: "Inglese", en: "Inglese", fra: "Francese", fre: "Francese", fr: "Francese", deu: "Tedesco", ger: "Tedesco", de: "Tedesco", spa: "Spagnolo", es: "Spagnolo",
+  por: "Portoghese", pt: "Portoghese", jpn: "Giapponese", ja: "Giapponese", zho: "Cinese", chi: "Cinese", zh: "Cinese", rus: "Russo", ru: "Russo", ara: "Arabo", ar: "Arabo", kor: "Coreano", ko: "Coreano", nld: "Olandese", dut: "Olandese", nl: "Olandese" };
+const langName = (l: string) => l ? `${LANGS[l.toLowerCase()] || l}${LANGS[l.toLowerCase()] ? ` (${l})` : ""}` : "";
+const BRANDS: Record<string, string> = { isom: "ISO Base Media", iso2: "ISO Base Media v2", mp41: "MP4 v1", mp42: "MP4 v2", avc1: "AVC", "qt  ": "QuickTime", M4V: "Apple M4V", M4A: "Apple M4A", "3gp4": "3GPP", "3gp5": "3GPP", "3g2a": "3GPP2", dash: "MPEG-DASH", XAVC: "Sony XAVC", MSNV: "Sony PSP", iso4: "ISO Base Media v4", iso5: "ISO Base Media v5", iso6: "ISO Base Media v6", hvc1: "HEVC", av01: "AV1" };
+const SHORT_FMT: Record<string, string> = { h264: "AVC (H.264)", hevc: "HEVC (H.265)", prores: "ProRes", dnxhd: "DNxHD / DNxHR", av1: "AV1", vp9: "VP9", vp8: "VP8", mpeg2video: "MPEG-2 Video", mpeg4: "MPEG-4 Visual", mjpeg: "Motion JPEG", hap: "HAP", cfhd: "CineForm", ffv1: "FFV1", v210: "Non compresso 10 bit", qtrle: "QuickTime Animation",
+  aac: "AAC", mp3: "MP3", ac3: "AC-3", eac3: "E-AC-3", dts: "DTS", truehd: "TrueHD", flac: "FLAC", alac: "ALAC", opus: "Opus", vorbis: "Vorbis" };
+// nomi leggibili per i metadati delle telecamere e di Final Cut
+function tagLabel(k: string): string {
+  const m: Record<string, string> = { "com.apple.proapps.reel": "Bobina (reel)", "com.apple.proapps.scene": "Scena", "com.apple.proapps.shot": "Ripresa (take)", "com.apple.proapps.cameraName": "Nome camera", "com.apple.proapps.cameraAngle": "Angolo camera",
+    "com.apple.proapps.clipID": "ID clip", "com.apple.proapps.image.{TIFF}.Make": "Marca", "com.apple.proapps.image.{TIFF}.Model": "Modello", "com.blackmagic-design.camera.environment": "Ambiente", "com.blackmagic-design.camera.dayNight": "Giorno / notte",
+    "com.blackmagic-design.camera.dateRecorded": "Data di registrazione", "com.blackmagic-design.camera.lensType": "Obiettivo", "com.blackmagic-design.camera.iso": "ISO", "com.blackmagic-design.camera.whiteBalanceKelvin": "Bilanciamento del bianco",
+    "com.blackmagic-design.camera.shutterAngle": "Angolo otturatore", "com.blackmagic-design.camera.shutterSpeed": "Tempo otturatore", "com.blackmagic-design.camera.focalLength": "Lunghezza focale", "com.blackmagic-design.camera.aperture": "Diaframma",
+    "com.blackmagic-design.camera.cameraId": "ID camera", "com.blackmagic-design.camera.cameraType": "Modello camera", "com.blackmagic-design.camera.goodTake": "Ripresa buona", "com.blackmagic-design.camera.tint": "Tinta",
+    "com.apple.quicktime.author": "Autore", "com.apple.quicktime.keywords": "Parole chiave", "minor_version": "Versione minore", "compatible_brands": "Brand compatibili", "timecode": "Timecode" };
+  return m[k] || k.replace(/^com\.(apple\.proapps|blackmagic-design\.camera|apple\.quicktime)\./, (_, g) => g.startsWith("apple.proapps") ? "Final Cut · " : g.startsWith("blackmagic") ? "Blackmagic · " : "QuickTime · ");
+}
+function tcAdd(tc: string, frames: number, fps: number): string {
+  const m = tc.match(/^(\d+):(\d+):(\d+)[:;.](\d+)$/); if (!m || !fps) return "";
+  const r = Math.round(fps); let tot = ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * r + +m[4] + frames;
+  const ff = tot % r; tot = Math.floor(tot / r);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(Math.floor(tot / 3600) % 24)}:${p(Math.floor(tot / 60) % 60)}:${p(tot % 60)}${tc.includes(";") ? ";" : ":"}${p(ff)}`;
+}
 async function fileDetails(path: string, name: string, temp = false, pre: string[] = []): Promise<Section[]> {
   const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 20000);
-  const r = await new Deno.Command(FFPROBE, { args: ["-v", "error", ...pre, "-show_format", "-show_streams", "-show_chapters", "-of", "json", path], stdout: "piped", stderr: "null", signal: ctl.signal }).output();
+  const r = await new Deno.Command(FFPROBE, { args: ["-v", "error", ...pre, "-show_format", "-show_streams", "-show_chapters", "-show_data", "-of", "json", path], stdout: "piped", stderr: "null", signal: ctl.signal }).output();
   clearTimeout(tm);
   // deno-lint-ignore no-explicit-any
   const d: any = JSON.parse(new TextDecoder().decode(r.stdout) || "{}");
   const f = d.format || {}, tags = f.tags || {};
-  const st = await Deno.stat(path).catch(() => null);
+  const st = pre.length ? null : await Deno.stat(path).catch(() => null);
   const T = (k: string) => Object.entries(tags).find(([x]) => x.toLowerCase() === k.toLowerCase())?.[1] as string | undefined;
-  const out: Section[] = [];
-  out.push({ title: "File", rows: rowsOf([["Nome", name], ["Cartella", temp || pre.length ? "" : path.split(/[\\/]/).slice(0, -1).join("/")], ["Contenitore", `${f.format_long_name || f.format_name}${f.format_name ? ` (${f.format_name})` : ""}`],
-    ["Dimensione", human.size(Number(f.size) || st?.size || 0)], ["Durata", human.dur(Number(f.duration))], ["Bitrate totale", human.br(Number(f.bit_rate))],
-    ["Tracce", `${d.streams?.length || 0}`], ["Creato", human.date(T("creation_time") || T("com.apple.quicktime.creationdate") || "")],
-    ["Modificato", st?.mtime ? human.date(st.mtime.toISOString()) : ""], ["Marca", T("com.apple.quicktime.make") || T("make")], ["Modello", T("com.apple.quicktime.model") || T("model")],
-    ["Software", T("com.apple.quicktime.software") || T("software")], ["Codificato con", T("encoder") || T("encoded_by")],
-    ["Posizione", T("com.apple.quicktime.location.ISO6709") || T("location")], ["Marca del formato", T("major_brand")], ["Titolo", T("title")], ["Artista", T("artist")],
-    ["Album", T("album")], ["Anno", T("date") || T("year")], ["Genere", T("genre")], ["Commento", T("comment") || T("description")], ["Copyright", T("copyright")]]) });
+  const fileSize = Number(f.size) || st?.size || 0, fileDur = Number(f.duration) || 0;
   // deno-lint-ignore no-explicit-any
   const streams = (d.streams || []) as any[];
+  const mainV = streams.find((x) => x.codec_type === "video" && !x.disposition?.attached_pic);
+  const scan = mainV ? await frameScan(path, pre) : null;
+  const brand = String(T("major_brand") || "");
+  const compat = String(T("compatible_brands") || "").match(/.{1,4}/g) || [];
+  const out: Section[] = [];
+  out.push({ title: "Generale", rows: rowsOf([["Nome", name], ["Cartella", temp || pre.length ? "" : path.split(/[\\/]/).slice(0, -1).join("/")],
+    ["Contenitore", `${f.format_long_name || f.format_name}${f.format_name ? ` (${f.format_name})` : ""}`], ["Profilo formato", BRANDS[brand] || BRANDS[brand.trim()] || ""],
+    ["ID codec", brand ? `${brand.trim()}${compat.length ? ` (${compat.map((x) => x.trim()).join("/")})` : ""}` : ""],
+    ["Dimensione", fileSize ? `${human.size(fileSize)} (${human.num(fileSize)} byte)` : ""], ["Durata", human.dur(fileDur)], ["Bitrate totale", human.br(Number(f.bit_rate))],
+    ["Modalità bitrate", mainV && /prores|dnxhd|v210|hap|qtrle|ffv1|rawvideo/.test(mainV.codec_name) ? "costante (intra-frame)" : ""],
+    ["Frequenza fotogrammi", mainV ? human.fps(mainV.avg_frame_rate) : ""], ["Tracce", `${streams.length}`],
+    ["Data codifica", T("creation_time") ? `${String(T("creation_time")).replace("T", " ").replace(/\.\d+Z$|Z$/, "")} UTC` : ""], ["Creato (QuickTime)", T("com.apple.quicktime.creationdate")],
+    ["Modificato", st?.mtime ? human.date(st.mtime.toISOString()) : ""], ["Marca", T("com.apple.quicktime.make") || T("make")], ["Modello", T("com.apple.quicktime.model") || T("model")],
+    ["Software", T("com.apple.quicktime.software") || T("software")], ["Codificato con", T("encoder") || T("encoded_by")], ["Timecode", T("timecode")],
+    ["Posizione", T("com.apple.quicktime.location.ISO6709") || T("location")], ["Titolo", T("title")], ["Artista", T("artist")],
+    ["Album", T("album")], ["Anno", T("date") || T("year")], ["Genere", T("genre")], ["Commento", T("comment") || T("description")], ["Copyright", T("copyright")]]) });
+  const trackSize = (s: { bit_rate?: string; duration?: string }) => {
+    const b = Number(s.bit_rate) * (Number(s.duration) || fileDur) / 8;
+    return b > 0 ? `${human.size(b)}${fileSize ? ` (${Math.round(b / fileSize * 100)}%)` : ""}` : "";
+  };
   let vi = 0, ai = 0, si = 0;
   for (const s of streams) {
     const t = s.tags || {}, disp = s.disposition || {};
-    const lang = t.language && t.language !== "und" ? t.language : "";
+    const lang = langName(t.language && t.language !== "und" ? t.language : "");
     if (s.codec_type === "video" && disp.attached_pic) {
       out.push({ title: "Copertina incorporata", rows: rowsOf([["Formato", s.codec_long_name || s.codec_name], ["Misura", `${s.width} × ${s.height}`]]) });
       continue;
     }
     if (s.codec_type === "video") {
+      const main = s === mainV;
       const px = pixInfo(String(s.pix_fmt || ""));
       const sideRot = (s.side_data_list || []).find((x: { rotation?: number }) => x.rotation != null)?.rotation;
-      const hdr = s.color_transfer === "smpte2084" ? "HDR10 / PQ" : s.color_transfer === "arib-std-b67" ? "HLG" : (s.side_data_list || []).some((x: { side_data_type?: string }) => /DOVI/i.test(x.side_data_type || "")) ? "Dolby Vision" : "SDR";
+      const md = main ? scan?.mastering || (s.side_data_list || []).find((x: { side_data_type?: string }) => /Mastering display/i.test(x.side_data_type || "")) : null;
+      const cl = main ? scan?.light || (s.side_data_list || []).find((x: { side_data_type?: string }) => /Content light/i.test(x.side_data_type || "")) : null;
+      const dovi = (s.side_data_list || []).some((x: { side_data_type?: string }) => /DOVI|Dolby Vision/i.test(x.side_data_type || "")) || (main && scan?.dovi);
+      const hdrFmt = [dovi ? "Dolby Vision" : "", main && scan?.hdr10plus ? "HDR10+ (SMPTE ST 2094-40)" : "", md ? "SMPTE ST 2086" : "",
+        s.color_transfer === "smpte2084" ? "PQ (SMPTE ST 2084)" : s.color_transfer === "arib-std-b67" ? "HLG" : ""].filter(Boolean).join(", ");
+      const range = s.color_transfer === "smpte2084" || s.color_transfer === "arib-std-b67" || dovi ? "HDR" : "SDR";
+      const avc = s.codec_name === "h264" ? avcConfig(hexOf(s.extradata)) : {};
+      const lvl = s.level > 0 ? (s.codec_name === "h264" ? (s.level / 10).toString().replace(".", ",") : s.codec_name === "hevc" ? (s.level / 30).toString().replace(".", ",") : String(s.level)) : "";
+      const fps = frac(s.avg_frame_rate) || frac(s.r_frame_rate);
+      const bpf = Number(s.bit_rate) && s.width && fps ? (Number(s.bit_rate) / (s.width * s.height * fps)).toFixed(3).replace(".", ",") : "";
+      const gop = main && scan ? (scan.allI ? "solo fotogrammi chiave (intra)" : scan.N ? `M=${scan.M}, N=${scan.N}` : `M=${scan.M}, N>${scan.count} (un solo fotogramma chiave nei primi ${scan.count})`) : "";
+      const scanType = main && scan?.interlaced ? `interlacciata (${scan.tff ? "campo superiore primo" : "campo inferiore primo"})`
+        : s.field_order === "progressive" ? "progressiva" : s.field_order && s.field_order !== "unknown" ? `interlacciata (${s.field_order === "tt" || s.field_order === "tb" ? "campo superiore primo" : "campo inferiore primo"})` : main && scan ? "progressiva" : "";
+      const confBox = s.codec_name === "h264" ? "avcC" : s.codec_name === "hevc" ? "hvcC" : s.codec_name === "av1" ? "av1C" : "";
       out.push({ title: `Video${streams.filter((x) => x.codec_type === "video" && !x.disposition?.attached_pic).length > 1 ? ` ${++vi}` : ""}`, rows: rowsOf([
-        ["Codec", `${s.codec_long_name || s.codec_name}`], ["Profilo", s.profile], ["Livello", s.level > 0 ? (s.codec_name === "h264" || s.codec_name === "hevc" ? (s.level / (s.codec_name === "hevc" ? 30 : 10)).toFixed(1).replace(".", ",") : s.level) : ""],
-        ["Codice (FourCC)", s.codec_tag_string && !/^\[/.test(s.codec_tag_string) ? s.codec_tag_string : ""], ["Risoluzione", s.width ? `${s.width} × ${s.height}` : ""],
-        ["Proporzioni", s.display_aspect_ratio && s.display_aspect_ratio !== "0:1" ? s.display_aspect_ratio : ""], ["Pixel (SAR)", s.sample_aspect_ratio && s.sample_aspect_ratio !== "1:1" && s.sample_aspect_ratio !== "0:1" ? s.sample_aspect_ratio : s.width ? "quadrati (1:1)" : ""],
-        ["Frame rate", human.fps(s.avg_frame_rate) || human.fps(s.r_frame_rate)], ["Frame rate variabile", s.avg_frame_rate && s.r_frame_rate && s.avg_frame_rate !== s.r_frame_rate ? "sì (VFR)" : ""],
-        ["Fotogrammi", s.nb_frames ? human.num(Number(s.nb_frames)) : ""], ["Durata", human.dur(Number(s.duration))], ["Bitrate", human.br(Number(s.bit_rate))],
-        ["Formato pixel", s.pix_fmt], ["Profondità colore", px.bits ? `${s.bits_per_raw_sample || px.bits} bit` : ""], ["Campionamento colore", px.sub], ["Trasparenza (alfa)", px.alpha ? "sì" : ""],
-        ["Gamma dinamica", hdr], ["Spazio colore", s.color_space], ["Primari", s.color_primaries], ["Trasferimento", s.color_transfer], ["Livelli", s.color_range === "pc" ? "pieni (0-255)" : s.color_range === "tv" ? "limitati (16-235)" : ""],
-        ["Scansione", s.field_order === "progressive" ? "progressiva" : s.field_order ? `interlacciata (${s.field_order === "tt" || s.field_order === "tb" ? "campo superiore primo" : "campo inferiore primo"})` : ""],
-        ["Rotazione", sideRot ? `${sideRot}°` : t.rotate ? `${t.rotate}°` : ""], ["B-frame", s.has_b_frames != null ? (s.has_b_frames ? `sì (${s.has_b_frames})` : "no") : ""],
-        ["Timecode", t.timecode], ["Lingua", lang], ["Nome traccia", t.title || t.handler_name], ["Codificatore", t.encoder]]) });
+        ["ID traccia", s.id ? parseInt(s.id) : s.index + 1], ["Formato", SHORT_FMT[s.codec_name] || s.codec_name], ["Codec", s.codec_long_name],
+        ["Profilo formato", s.profile ? `${s.profile}${lvl ? `@L${lvl}` : ""}` : ""], ["Formato HDR", hdrFmt],
+        ["Impostazioni formato", s.codec_name === "h264" ? [avc.cabac != null ? (avc.cabac ? "CABAC" : "CAVLC") : "", avc.refs != null ? `${avc.refs} Ref Frame${avc.refs === 1 ? "" : "s"}` : ""].filter(Boolean).join(" / ") : s.codec_name === "hevc" ? "CABAC" : ""],
+        ["CABAC", avc.cabac != null ? (avc.cabac ? "sì" : "no") : s.codec_name === "hevc" ? "sì" : ""], ["Fotogrammi di riferimento", avc.refs != null ? `${avc.refs}` : ""],
+        ["GOP", gop], ["B-frame", s.has_b_frames != null ? (s.has_b_frames ? `sì (${s.has_b_frames})` : "no") : ""],
+        ["ID codec", s.codec_tag_string && !/^\[/.test(s.codec_tag_string) ? s.codec_tag_string : ""], ["Durata", human.dur(Number(s.duration) || fileDur)], ["Bitrate", human.br(Number(s.bit_rate))],
+        ["Larghezza", s.width ? `${human.num(s.width)} pixel` : ""], ["Altezza", s.height ? `${human.num(s.height)} pixel` : ""], ["Risoluzione codificata", s.coded_width && (s.coded_width !== s.width || s.coded_height !== s.height) ? `${s.coded_width} × ${s.coded_height}` : ""],
+        ["Rapporto d'aspetto", s.display_aspect_ratio && s.display_aspect_ratio !== "0:1" ? s.display_aspect_ratio : ""], ["Pixel (SAR)", s.sample_aspect_ratio && s.sample_aspect_ratio !== "1:1" && s.sample_aspect_ratio !== "0:1" ? s.sample_aspect_ratio : s.width ? "quadrati (1:1)" : ""],
+        ["Modalità frame rate", s.avg_frame_rate && s.r_frame_rate && Math.abs(frac(s.avg_frame_rate) - frac(s.r_frame_rate)) > 0.01 ? "variabile (VFR)" : "costante"],
+        ["Frequenza fotogrammi", human.fps(s.avg_frame_rate) || human.fps(s.r_frame_rate)], ["Fotogrammi", s.nb_frames ? human.num(Number(s.nb_frames)) : fps && (Number(s.duration) || fileDur) ? `circa ${human.num(Math.round(fps * (Number(s.duration) || fileDur)))}` : ""],
+        ["Spazio colore", /rgb|gbr|bgr|argb/.test(String(s.pix_fmt)) ? "RGB" : s.pix_fmt ? "YUV" : ""], ["Sottocampionamento croma", px.sub], ["Profondità bit", px.bits ? `${s.bits_per_raw_sample || px.bits} bit` : ""], ["Trasparenza (alfa)", px.alpha ? "sì" : ""],
+        ["Formato pixel", s.pix_fmt], ["Tipo scansione", scanType], ["Bit/(pixel×fotogramma)", bpf], ["Dimensione traccia", trackSize(s)],
+        ["Gamma dinamica", range], ["Intervallo colore", s.color_range === "pc" ? "Full (0-255)" : s.color_range === "tv" ? "Limited (16-235)" : ""],
+        ["Colori primari", (s.color_primaries || "").replace(/^bt/, "BT.").replace("BT.2020", "BT.2020")], ["Caratteristiche trasferimento", (s.color_transfer || "").replace(/^bt/, "BT.").replace("smpte2084", "PQ (SMPTE ST 2084)").replace("arib-std-b67", "HLG")],
+        ["Coefficienti matrice", (s.color_space || "").replace(/^bt/, "BT.").replace("BT.2020nc", "BT.2020 non costante")],
+        ["Colori primari display mastering", md ? primariesName(md) : ""],
+        ["Luminanza display mastering", md ? `min: ${frac(md.min_luminance).toFixed(4)} cd/m², max: ${Math.round(frac(md.max_luminance))} cd/m²` : ""],
+        ["Luminanza massima contenuto (MaxCLL)", cl?.max_content ? `${cl.max_content} cd/m²` : ""], ["Luminanza media massima (MaxFALL)", cl?.max_average ? `${cl.max_average} cd/m²` : ""],
+        ["Rotazione", sideRot ? `${sideRot}°` : t.rotate ? `${t.rotate}°` : ""], ["Timecode", t.timecode], ["Lingua", lang], ["Nome traccia", t.title || t.handler_name],
+        ["Compressore / codificatore", t.encoder], ["Fornitore", t.vendor_id && !/^\[/.test(t.vendor_id) ? t.vendor_id : ""], ["Data codifica", t.creation_time ? `${String(t.creation_time).replace("T", " ").replace(/\.\d+Z$|Z$/, "")} UTC` : ""],
+        ["Casella configurazione codec", confBox]]) });
     } else if (s.codec_type === "audio") {
+      const cn = String(s.codec_name || "");
+      const pcm = cn.match(/^pcm_([suf])(\d+)(le|be)?/);
       out.push({ title: `Audio${streams.filter((x) => x.codec_type === "audio").length > 1 ? ` ${++ai}` : ""}`, rows: rowsOf([
-        ["Codec", s.codec_long_name || s.codec_name], ["Profilo", s.profile], ["Canali", `${s.channels}${CH_NAME[s.channels] ? ` (${CH_NAME[s.channels]})` : ""}`], ["Disposizione", s.channel_layout],
-        ["Frequenza", s.sample_rate ? `${(Number(s.sample_rate) / 1000).toString().replace(".", ",")} kHz` : ""], ["Campioni", s.sample_fmt], ["Bit", s.bits_per_raw_sample || s.bits_per_sample || ""],
-        ["Bitrate", human.br(Number(s.bit_rate))], ["Durata", human.dur(Number(s.duration))], ["Lingua", lang], ["Nome traccia", t.title || t.handler_name], ["Predefinita", disp.default ? "sì" : ""]]) });
+        ["ID traccia", s.id ? parseInt(s.id) : s.index + 1], ["Formato", pcm ? "PCM" : SHORT_FMT[cn] || cn], ["Codec", s.codec_long_name], ["Profilo", s.profile],
+        ["Impostazioni formato", pcm ? `${pcm[3] === "be" ? "Big" : "Little"} / ${pcm[1] === "u" ? "Unsigned" : pcm[1] === "f" ? "Float" : "Signed"}` : ""],
+        ["ID codec", s.codec_tag_string && !/^\[/.test(s.codec_tag_string) ? s.codec_tag_string : ""], ["Durata", human.dur(Number(s.duration) || fileDur)],
+        ["Modalità bitrate", pcm || /flac|alac|truehd|wavpack|tta/.test(cn) ? (pcm ? "costante" : "variabile (senza perdita)") : ""], ["Bitrate", human.br(Number(s.bit_rate))],
+        ["Canali", `${s.channels}${CH_NAME[s.channels] ? ` (${CH_NAME[s.channels]})` : ""}`], ["Disposizione canali", s.channel_layout],
+        ["Frequenza campionamento", s.sample_rate ? `${(Number(s.sample_rate) / 1000).toString().replace(".", ",")} kHz` : ""], ["Formato campioni", s.sample_fmt],
+        ["Profondità bit", s.bits_per_raw_sample ? `${s.bits_per_raw_sample} bit` : pcm ? `${pcm[2]} bit` : s.bits_per_sample ? `${s.bits_per_sample} bit` : ""],
+        ["Dimensione traccia", trackSize(s)], ["Lingua", lang], ["Nome traccia", t.title || t.handler_name], ["Predefinita", disp.default ? "sì" : ""],
+        ["Data codifica", t.creation_time ? `${String(t.creation_time).replace("T", " ").replace(/\.\d+Z$|Z$/, "")} UTC` : ""]]) });
     } else if (s.codec_type === "subtitle") {
-      out.push({ title: `Sottotitoli${streams.filter((x) => x.codec_type === "subtitle").length > 1 ? ` ${++si}` : ""}`, rows: rowsOf([["Formato", s.codec_long_name || s.codec_name], ["Lingua", lang], ["Nome", t.title], ["Forzati", disp.forced ? "sì" : ""]]) });
+      out.push({ title: `Sottotitoli${streams.filter((x) => x.codec_type === "subtitle").length > 1 ? ` ${++si}` : ""}`, rows: rowsOf([["Formato", s.codec_long_name || s.codec_name], ["ID codec", s.codec_tag_string && !/^\[/.test(s.codec_tag_string) ? s.codec_tag_string : ""], ["Lingua", lang], ["Nome", t.title], ["Forzati", disp.forced ? "sì" : ""]]) });
+    } else if (s.codec_type === "data" && (s.codec_tag_string === "tmcd" || t.timecode)) {
+      // traccia timecode (QuickTime TC): primo e ultimo fotogramma
+      const vfps = mainV ? frac(mainV.avg_frame_rate) || frac(mainV.r_frame_rate) : 0;
+      const dur = Number(s.duration) || fileDur;
+      const last = t.timecode && vfps ? tcAdd(String(t.timecode), Math.max(0, Math.round(dur * vfps) - 1), vfps) : "";
+      out.push({ title: "Timecode", rows: rowsOf([["ID traccia", s.id ? parseInt(s.id) : s.index + 1], ["Tipo", "Time code"], ["Formato", s.codec_tag_string === "tmcd" ? "QuickTime TC" : s.codec_name || "timecode"],
+        ["Durata", human.dur(dur)], ["Frequenza fotogrammi", vfps ? `${vfps.toFixed(3).replace(".", ",")} fps` : ""], ["Timecode primo fotogramma", t.timecode], ["Timecode ultimo fotogramma", last],
+        ["Drop frame", t.timecode ? (String(t.timecode).includes(";") ? "sì" : "no") : ""], ["Lingua", lang], ["Data codifica", t.creation_time ? `${String(t.creation_time).replace("T", " ").replace(/\.\d+Z$|Z$/, "")} UTC` : ""]]) });
     } else if (s.codec_type === "data" || s.codec_type === "attachment") {
-      out.push({ title: s.codec_type === "data" ? "Traccia dati" : "Allegato", rows: rowsOf([["Tipo", s.codec_long_name || s.codec_name || s.codec_tag_string], ["Nome", t.handler_name || t.filename], ["Timecode", t.timecode]]) });
+      out.push({ title: s.codec_type === "data" ? "Traccia dati" : "Allegato", rows: rowsOf([["Tipo", s.codec_long_name || s.codec_name || s.codec_tag_string], ["ID codec", s.codec_tag_string], ["Nome", t.handler_name || t.filename]]) });
     }
   }
   // deno-lint-ignore no-explicit-any
   const ch = (d.chapters || []) as any[];
   if (ch.length) out.push({ title: `Capitoli (${ch.length})`, list: ch.map((c) => `${human.dur(Math.floor(Number(c.start_time)))}  ${c.tags?.title || ""}`) });
-  const shown = new Set(["creation_time", "encoder", "major_brand", "title", "artist", "album", "date", "genre", "comment", "copyright", "description"]);
+  const shown = new Set(["creation_time", "encoder", "major_brand", "title", "artist", "album", "date", "genre", "comment", "copyright", "description", "timecode", "compatible_brands"]);
   const rest = Object.entries(tags).filter(([k]) => !shown.has(k.toLowerCase()) && !/com\.apple\.quicktime\.(make|model|software|location|creationdate)/.test(k));
-  if (rest.length) out.push({ title: "Altri metadati", rows: rest.map(([k, v]) => [k, String(v)] as Row) });
+  const cam = rest.filter(([k]) => /^com\.(apple\.proapps|blackmagic-design)/.test(k)), other = rest.filter(([k]) => !/^com\.(apple\.proapps|blackmagic-design)/.test(k));
+  const nice = (v: unknown) => { const x = clean(v); const m = x.match(/^(\d{4})(\d{2})(\d{2})$/); return m ? `${m[3]}/${m[2]}/${m[1]}` : x; };
+  if (cam.length) out.push({ title: "Dati di ripresa (camera e Final Cut)", rows: cam.map(([k, v]) => [tagLabel(k), nice(v)] as Row) });
+  if (other.length) out.push({ title: "Altri metadati", rows: other.map(([k, v]) => [tagLabel(k), clean(v)] as Row) });
   return out;
 }
 // deno-lint-ignore no-explicit-any

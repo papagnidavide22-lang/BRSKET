@@ -1629,12 +1629,13 @@ function renderSpecs() {
   const secs = [...(SPEC.loud ? [{ title: 'Volume (EBU R128)', rows: SPEC.loud }] : []), ...SPEC.sections];
   const loudBtn = S.info?.local && !SPEC.loud && SPEC.sections.some(x => /^Audio/.test(x.title))
     ? `<section class="spec-sec"><h5>Volume (EBU R128)</h5><p class="desc" style="margin-bottom:12px">Misura il volume percepito, la dinamica e il picco, come in regia.</p><button type="button" class="btn btn-secondary btn-sm" id="specLoud">Misura il volume</button></section>` : '';
-  $('#specBody').innerHTML = (SPEC.loudBusy ? `<div class="spec-loading"><span class="spin"></span> Misuro il volume…</div>` : loudBtn) + secs.map(specHtml).join('');
+  $('#specBody').innerHTML = (SPEC.loudBusy ? `<div class="spec-loading"><span class="spin"></span> Misuro il volume…${(S.info?.duration || 0) > 1200 ? ` Il file è lungo (${fmtTime(S.info.duration)}): ci vuole qualche minuto, puoi chiudere la scheda e riaprirla.` : ''}</div>` : loudBtn) + secs.map(specHtml).join('');
   const lb = $('#specLoud');
   if (lb) lb.onclick = async () => {
     SPEC.loudBusy = true; renderSpecs();
-    try { SPEC.loud = (await api(`/api/details?src=${encodeURIComponent(S.info.src)}&loud=1`)).rows; } catch (e) { toast(e.message, 'err'); }
-    SPEC.loudBusy = false; renderSpecs();
+    const mine = SPEC;
+    try { mine.loud = (await api(`/api/details?src=${encodeURIComponent(S.info.src)}&loud=1`)).rows; } catch (e) { toast(e.message, 'err'); }
+    mine.loudBusy = false; if (SPEC === mine && $('#specs').open) renderSpecs();
   };
 }
 $('#specBtn').onclick = async () => {
@@ -1642,7 +1643,8 @@ $('#specBtn').onclick = async () => {
   const src = i.local ? i.src : S.url;
   $('#specBody').innerHTML = '<div class="spec-loading"><span class="spin"></span> Leggo tutte le informazioni…</div>';
   $('#specs').showModal();
-  try { const r = await api(`/api/details?src=${encodeURIComponent(src)}`); SPEC = { sections: r.sections, title: r.title }; renderSpecs(); }
+  if (SPEC?.src === src) { renderSpecs(); return; }
+  try { const r = await api(`/api/details?src=${encodeURIComponent(src)}`); SPEC = { sections: r.sections, title: r.title, src }; renderSpecs(); }
   catch (e) { $('#specBody').innerHTML = `<section><p class="desc">${esc(e.message)}</p></section>`; }
 };
 $('#closeSpecs').onclick = () => $('#specs').close();
