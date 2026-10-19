@@ -26,6 +26,7 @@ export type XF = {
   kbps?: number;            // peso stimato (audio) in kbit/s
   mbps?: number;            // peso stimato (video 1080p) in Mbit/s
   heavy?: boolean;          // conversione lunga o file molto pesanti
+  fixed?: string;           // standard rigido (DVD, DV, VCD): misura e frame rate decisi dal formato
 };
 
 const PCM24 = ["-c:a", "pcm_s24le"];
@@ -83,9 +84,9 @@ export const XF: Record<string, XF> = {
     v: ["-c:v", "mpeg2video", "-b:v", "12M", "-maxrate", "15M", "-bufsize", "4M", "-g", "15", "-bf", "2", "-pix_fmt", "yuv420p", "-f", "mpeg"],
     a: ["-c:a", "mp2", "-b:a", "384k"], ar: 48000, maxCh: 2, mbps: 12 },
   dvd: { mode: "video", group: "Broadcast", label: "DVD PAL", sub: "Masterizzare un DVD", ext: "mpg", need: ["mpeg2video", "ac3"], mux: "dvd",
-    v: ["-target", "pal-dvd", "-aspect", "16:9"], a: ["-c:a", "ac3", "-b:a", "448k"], ar: 48000, maxCh: 6, mbps: 6 },
+    fixed: "720 × 576 a 25 fps", v: ["-target", "pal-dvd", "-aspect", "16:9"], a: ["-c:a", "ac3", "-b:a", "448k"], ar: 48000, maxCh: 6, mbps: 6 },
   dv: { mode: "video", group: "Broadcast", label: "DV PAL", sub: "MiniDV, vecchie regie", ext: "dv", need: ["dvvideo"], mux: "dv",
-    v: ["-target", "pal-dv"], a: PCM16, ar: 48000, ac: 2, mbps: 29 },
+    fixed: "720 × 576 a 25 fps", v: ["-target", "pal-dv"], a: PCM16, ar: 48000, ac: 2, mbps: 29 },
 
   // ---------- video: web e moderni ----------
   hevc: { mode: "video", group: "Web e moderni", label: "HEVC / H.265", sub: "Metà peso dell'H.264", ext: "mp4", need: ["libx265"],
@@ -116,7 +117,7 @@ export const XF: Record<string, XF> = {
   xvid: { mode: "video", group: "Vecchi formati", label: "AVI DivX / Xvid", sub: "Lettori DVD da salotto", ext: "avi", need: ["mpeg4|libxvid", "libmp3lame"],
     v: ["-c:v", "mpeg4", "-vtag", "XVID", "-q:v", "3", "-pix_fmt", "yuv420p"], a: ["-c:a", "libmp3lame", "-b:a", "192k"], maxCh: 2, mbps: 5 },
   mpeg1: { mode: "video", group: "Vecchi formati", label: "MPEG-1 (VCD)", sub: "Video CD, anni '90", ext: "mpg", need: ["mpeg1video", "mp2"], mux: "vcd",
-    v: ["-target", "pal-vcd"], a: ["-c:a", "mp2", "-b:a", "224k"], ar: 44100, ac: 2, mbps: 1.4 },
+    fixed: "352 × 288 a 25 fps", v: ["-target", "pal-vcd"], a: ["-c:a", "mp2", "-b:a", "224k"], ar: 44100, ac: 2, mbps: 1.4 },
   "3gp": { mode: "video", group: "Vecchi formati", label: "3GP", sub: "Vecchi cellulari", ext: "3gp", need: ["libx264"], mux: "3gp",
     v: ["-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-crf", "24", "-pix_fmt", "yuv420p"], a: ["-c:a", "aac", "-b:a", "96k"], ac: 2, maxW: 640, mbps: 1 },
   rm: { mode: "video", group: "Vecchi formati", label: "RealMedia", sub: "RealPlayer, anni 2000", ext: "rm", need: ["rv20", "ac3"], mux: "rm",

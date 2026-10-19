@@ -356,6 +356,13 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
 .group[hidden]{display:none}
 .opts > .summary-box{margin-top:clamp(28px,3.5vw,44px);padding-top:clamp(20px,2.5vw,28px);border-top:1px solid var(--surface-2)}
 .opts > .actions{margin-top:clamp(14px,1.8vw,20px)}
+/* verifica dei formati */
+.test-sum{margin-top:12px;font-size:var(--step-body)}
+.test-sum b{font-weight:500}
+.test-list{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:4px;font-size:var(--step-small)}
+.test-list li{background:var(--surface-2);padding:10px 12px}
+.test-list li b{font-weight:500}
+.test-list li span{color:var(--muted);display:block;margin-top:2px;word-break:break-word}
 /* tutti i formati */
 .morefmt{background:var(--surface-2);margin-top:2px}
 .morefmt summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:12px;padding:16px 18px;font-size:var(--step-body);font-weight:500}
@@ -710,6 +717,16 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
       </div>
       <p class="hint" id="lanHint" hidden>La prima volta il computer può chiedere se consentire le connessioni in entrata a "deno": scegli Consenti.</p>
     </section>
+    <section class="local-only">
+      <h5>Verifica dei formati</h5>
+      <p class="desc">Brsket converte un breve video di prova in tutti i formati con il tuo computer e controlla che ogni file si apra. Ci vogliono un paio di minuti; non tocca i tuoi file.</p>
+      <button type="button" class="btn btn-secondary btn-sm" id="runTest">Prova tutti i formati</button>
+      <div class="test-box" id="testBox" hidden>
+        <div class="track" style="margin-top:16px"><div class="segp active" style="flex:1"><i id="testBar"></i></div></div>
+        <p class="test-sum" id="testSum"></p>
+        <ul class="test-list" id="testList"></ul>
+      </div>
+    </section>
   </div>
 </dialog>
 
@@ -956,7 +973,8 @@ function renderOptions() {
   $('#proFormats').innerHTML = PRO_FORMATS.map(([v,l,s]) => chip(v,l,PRO_OK.includes(v)?s:'Non disponibile',v===S.format,!PRO_OK.includes(v))).join('');
   $('#proHint').hidden = !PRO_KEYS.includes(S.format);
   renderMoreFormats();
-  $('#aspectBox').hidden = !video;
+  const stdFmt = video && XF[S.format]?.fixed;
+  $('#aspectBox').hidden = !video || !!stdFmt;
   // con la misura su misura le proporzioni le decide la misura
   if (custom) S.aspect = 'orig';
   $('#aspects').innerHTML = ASPECTS.map(([v,l,s,[w,h]]) => {
@@ -973,7 +991,8 @@ function renderOptions() {
   if (['hap','hapq'].includes(S.format) && S.aspect === '4:5' && S.res !== '2160') $('#fitHint').textContent += ' HAP vuole misure multiple di 4: il 4:5 esce 1080 × 1348.';
 
   // per lo show: frame rate e risoluzione esatta (solo video)
-  $('#showBox').hidden = !video;
+  $('#showBox').hidden = !video || !!stdFmt;
+  if (stdFmt) { S.aspect = 'orig'; S.res = 'orig'; S.fps = 'orig'; }
   $('#fpsChips').innerHTML = FPS_OPTS.map(([v,l,s]) => chip(v,l,s,v===S.fps)).join('');
   $('#resChips').innerHTML = RES_OPTS.map(([v,l,s]) => chip(v,l, v==='custom' ? (custom && customOk() ? `${S.resW} × ${S.resH}` : s) : v!=='orig' && S.aspect!=='orig' ? (v==='2160' ? `${S.aspect} al doppio` : `${S.aspect} 1080`) : s, v===S.res)).join('');
   const rcWasHidden = $('#resCustom').hidden;
@@ -990,11 +1009,12 @@ function renderOptions() {
     $('#resRatio').style.color = customOk() ? '' : 'var(--err)';
   }
   const showOn = video && (S.fps !== 'orig' || S.res !== 'orig');
-  const hap4 = ['hap','hapq'].includes(S.format) && custom && customOk() && (S.resW % 4 || S.resH % 4);
+  const mq = ['hap','hapq'].includes(S.format) ? 4 : Math.max(2, XF[S.format]?.mult || 2);
+  const hap4 = custom && customOk() && (S.resW % mq || S.resH % mq);
   $('#showHint').hidden = !showOn;
   $('#showHint').textContent = showOn ? [custom ? (customOk() ? `Il video esce esattamente ${S.resW} × ${S.resH}, ${S.resFit === 'crop' ? 'riempiendo tutta la misura e tagliando i bordi che avanzano' : 'intero, con bande nere dove le proporzioni sono diverse'}. Le proporzioni le decide la misura.` : 'Scrivi larghezza e altezza in pixel.') :
     S.res !== 'orig' ? (S.aspect === 'orig' ? `Il video viene portato esattamente a ${S.res === '2160' ? '3840 × 2160' : '1920 × 1080'}, con bande nere se le proporzioni sono diverse.` : `Formato ${S.aspect} in ${S.res === '2160' ? '4K' : '1080'}.`) : '',
-    hap4 ? `HAP vuole misure multiple di 4: esce ${Math.round(S.resW/4)*4} × ${Math.round(S.resH/4)*4}.` : '',
+    hap4 ? `${fmtLabel(S.format)} vuole misure multiple di ${mq}: esce ${Math.round(S.resW/mq)*mq} × ${Math.round(S.resH/mq)*mq}.` : '',
     S.fps !== 'orig' ? `Frame rate convertito a ${S.fps} fps.` : '', 'Richiede una conversione: ci vuole un po\' di più.'].filter(Boolean).join(' ') : '';
 
   // separazione (solo audio, solo se attivata)
@@ -1084,7 +1104,8 @@ function renderMoreFormats() {
   if (sel && !$('#moreFmt').open && !renderMoreFormats.userClosed) $('#moreFmt').open = true;
   let hint = '';
   if (sel) {
-    if (sel.seq) hint = 'Esce una cartella con un\'immagine per ogni fotogramma (nome_000001, nome_000002…), senza audio.';
+    if (sel.fixed) hint = `${sel.label} segue lo standard: esce sempre ${sel.fixed}, quindi proporzioni, risoluzione e frame rate non si scelgono.`;
+    else if (sel.seq) hint = 'Esce una cartella con un\'immagine per ogni fotogramma (nome_000001, nome_000002…), senza audio.';
     else if (sel.noAudio) hint = `${sel.label} non ha audio${sel.fps ? `: esce a ${sel.fps} fps` : ''}${sel.maxW ? ` e largo al massimo ${sel.maxW} pixel, se non scegli tu frame rate e risoluzione` : ''}.`;
     else if (sel.size) hint = `${sel.label} esce sempre ${sel.size[0]} × ${sel.size[1]}${sel.fps ? ` a ${sel.fps} fps` : ''}, se non scegli tu risoluzione e frame rate.`;
     else if (sel.maxW) hint = `Se non scegli tu la risoluzione, esce largo al massimo ${sel.maxW} pixel.`;
@@ -1428,6 +1449,26 @@ addEventListener('drop', e => {
   if (k === 'files') uploadFiles([...e.dataTransfer.files]);
   else { const u = parseUrls(e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain')); if (u.length) { $('#url').value = u.join(' '); $('#form').requestSubmit(); } }
 });
+
+
+// ---------- verifica dei formati (autodiagnosi sul computer) ----------
+let testT = null;
+function renderTest(t) {
+  $('#testBox').hidden = !t.total && !t.running;
+  const pct = t.total ? t.done / t.total * 100 : 0;
+  $('#testBar').style.width = `${pct}%`;
+  const okN = t.results.filter(r => r.ok).length, bad = t.results.filter(r => !r.ok);
+  $('#runTest').disabled = t.running;
+  $('#runTest').textContent = t.running ? 'Prova in corso…' : t.total ? 'Ripeti la prova' : 'Prova tutti i formati';
+  $('#testSum').innerHTML = t.running ? `Provo ${t.done + 1} di ${t.total}${t.results.at(-1) ? `: ${esc(t.results.at(-1).label)} ${t.results.at(-1).ok ? 'ok' : 'non va'}` : ''}…`
+    : t.total ? `<b>${okN} di ${t.total} formati funzionano</b> su questo computer.${bad.length ? '' : ' Tutto a posto.'}${t.missing?.length ? ` Non disponibili qui: ${t.missing.map(m => esc(m.label)).join(', ')}.` : ''}` : '';
+  $('#testList').innerHTML = bad.map(r => `<li><b>${esc(r.label)}</b> (${r.mode === 'audio' ? 'audio' : r.mode === 'frame' ? 'immagine' : 'video'})<span>${esc(r.err || '')}</span></li>`).join('');
+}
+async function pollTest() {
+  clearTimeout(testT);
+  try { const t = await api('/api/selftest'); renderTest(t); if (t.running) testT = setTimeout(pollTest, 800); } catch {}
+}
+$('#runTest').onclick = async () => { try { renderTest(await api('/api/selftest', {})); pollTest(); } catch (e) { toast(e.message, 'err'); } };
 
 // ---------- taglio ----------
 function setupTrim() {
@@ -1881,6 +1922,7 @@ async function renderLan() {
   catch { $('#qrcode').hidden = true; }
 }
 async function openSettings(focusSchema) {
+  pollTest();
   await loadSettings();
   $('#schema').value = SETTINGS.schema; $('#notify').checked = !!SETTINGS.notify;
   renderSchemaUI(); renderLan(); renderCookies();

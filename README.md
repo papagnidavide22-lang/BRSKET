@@ -9,6 +9,13 @@ Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che
 
 Poi Brsket si aggiorna da sola.
 
+## Novità della 7.1
+- **Verifica dei formati** (Impostazioni): Brsket converte un video di prova in tutti i formati con il tuo Mac e controlla che ogni file si apra fino in fondo. Sul Mac di prova: 104 formati su 104 funzionano.
+- I video Motion JPEG (alcune fotocamere e vecchie regie) ora vengono riconosciuti come video e si convertono.
+- DVD, DV e Video CD seguono sempre il loro standard (720 × 576 o 352 × 288, 25 fps): le opzioni che non possono valere si nascondono.
+- Misure su misura arrotondate da sole quando il formato le vuole multiple di 4 o di 16 (HAP Alpha, CineForm).
+- Fotogrammi dai link: nome del file con il titolo vero anche incollando più link insieme, istante oltre la fine corretto da solo, copertina presa dalla migliore disponibile se quella indicata non esiste.
+
 ## Novità della 7.0
 - **90 formati in più** nel nuovo riquadro "Tutti i formati", con la ricerca:
   - **Professionale**: ProRes 422 Proxy, LT, 422 e 4444 XQ; DNxHR LB, SQ, HQ, HQX, 444 e DNxHR in MXF per Avid; GoPro CineForm; HAP Alpha; QuickTime Animation; non compresso 10 bit; FFV1; Ut Video; Motion JPEG.

@@ -180,13 +180,14 @@ async function probe(file: string): Promise<Probe> {
   const res: Probe = { duration: 0, width: 0, height: 0, vcodec: "", acodec: "", channels: 2 };
   try {
     const r = await new Deno.Command(FFPROBE, {
-      args: ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,channels:format=duration", "-of", "json", file],
+      args: ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,channels:stream_disposition=attached_pic:format=duration", "-of", "json", file],
       stdout: "piped", stderr: "null",
     }).output();
     const j = JSON.parse(new TextDecoder().decode(r.stdout));
     res.duration = parseFloat(j.format?.duration) || 0;
     for (const s of j.streams || []) {
-      if (s.codec_type === "video" && !res.vcodec && s.codec_name !== "mjpeg" && s.codec_name !== "png") {
+      // la copertina incorporata (attached_pic) non è il video; un video Motion JPEG invece sì
+      if (s.codec_type === "video" && !res.vcodec && !s.disposition?.attached_pic) {
         res.vcodec = s.codec_name; res.width = s.width || 0; res.height = s.height || 0;
       }
       if (s.codec_type === "audio" && !res.acodec) { res.acodec = s.codec_name; res.channels = s.channels || 2; }
@@ -243,11 +244,11 @@ function fileName(j: AnyJob, ext: string, extra = ""): string {
   name = safeName(name) || safeName(tokens.titolo) || "video";
   return `${name}${extra}.${ext}`;
 }
-async function uniquePath(name: string): Promise<string> {
+async function uniquePath(name: string, dir = OUT): Promise<string> {
   const dot = name.lastIndexOf(".");
   const base = name.slice(0, dot), ext = name.slice(dot);
-  let p = join(OUT, name), n = 2;
-  while (await exists(p)) p = join(OUT, `${base} (${n++})${ext}`);
+  let p = join(dir, name), n = 2;
+  while (await exists(p)) p = join(dir, `${base} (${n++})${ext}`);
   return p;
 }
 
@@ -269,6 +270,8 @@ function planPhases(j: AnyJob): Phase[] {
 const customRes = (j: AnyJob): [number, number] | null => j.res === "custom" ? [Number(j.resW), Number(j.resH)] : null;
 const resLabel = (j: AnyJob) => j.res === "custom" ? `${j.resW}×${j.resH}` : j.res === "2160" ? "4K" : j.res === "1080" ? "1080p" : "";
 function resToken(j: AnyJob, info: Probe): string {
+  const fx = xfOf(j.format)?.fixed;
+  if (fx) return fx.split(" a ")[0].replace(/ × /, "x");
   const cr = customRes(j);
   const aspect = !cr && j.aspect && j.aspect !== "orig" ? ASPECTS[j.aspect as string] : null;
   const kk = j.res === "2160" ? 2 : 1;
@@ -527,12 +530,13 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
   const fmt = j.format as string;
   const pro = PRO[fmt];
   const k = j.res === "2160" ? 2 : 1;   // 4K: proporzioni social al doppio (es. 9:16 = 2160x3840)
-  const cr = customRes(j);   // misura su misura: vince sulle proporzioni
-  const aspect = !cr && j.aspect && j.aspect !== "orig" ? ASPECTS[j.aspect as string].map((n) => n * k) as [number, number] : null;
   const xf = xfOf(fmt);
+  const std = !!xf?.fixed;   // DVD, DV, VCD: misura e frame rate sono quelli dello standard
+  const cr = std ? null : customRes(j);   // misura su misura: vince sulle proporzioni
+  const aspect = !std && !cr && j.aspect && j.aspect !== "orig" ? ASPECTS[j.aspect as string].map((n) => n * k) as [number, number] : null;
   // misura obbligata del formato (es. XDCAM 1920x1080) quando la risoluzione resta "Originale"
-  const forced = cr || (!aspect && j.res && j.res !== "orig" ? RES[j.res as string] : null) || (!aspect && xf?.size ? xf.size : null);
-  const fpsV = j.fps && j.fps !== "orig" ? String(j.fps) : xf?.fps || "";
+  const forced = std ? null : cr || (!aspect && j.res && j.res !== "orig" ? RES[j.res as string] : null) || (!aspect && xf?.size ? xf.size : null);
+  const fpsV = std ? "" : j.fps && j.fps !== "orig" ? String(j.fps) : xf?.fps || "";
   const fpsF = fpsV ? `fps=${fpsV}` : "";
   const mult = pro?.mult4 ? 4 : xf?.mult || 0;
   const extra = [!forced && !aspect && xf?.maxW ? `scale='min(iw,${xf.maxW})':-2:flags=lanczos` : "", fpsF,
@@ -906,11 +910,12 @@ async function convertLocal(j: AnyJob, src: string, trim = true): Promise<boolea
   let dest: string, target: string;
   if (xf?.seq) {
     const base = fileName(j, "x").replace(/\.x$/, "");
-    dest = join(OUT, base); let n = 2;
-    while (await exists(dest)) dest = join(OUT, `${base} (${n++})`);
+    const dir = (j._outDir as string) || OUT;
+    dest = join(dir, base); let n = 2;
+    while (await exists(dest)) dest = join(dir, `${base} (${n++})`);
     await Deno.mkdir(dest, { recursive: true });
     target = join(dest, `${base}_%06d.${ext}`);
-  } else target = dest = await uniquePath(fileName(j, ext));
+  } else target = dest = await uniquePath(fileName(j, ext), (j._outDir as string) || OUT);
   setPhase(j, "convert", 0, "convert");
   const meta = xf?.seq ? [] : ["-map_metadata", "0", "-metadata", `title=${(j._meta as Record<string, string>)?.title || j.title}`];
   const [ok, err] = await runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", "-progress", "pipe:1", ...pre, "-i", src, ...post,
@@ -926,8 +931,9 @@ async function convertLocal(j: AnyJob, src: string, trim = true): Promise<boolea
 
 // ---------- fotogrammi e copertine ----------
 // indirizzo diretto del video sul sito: ffmpeg legge solo il pezzo che serve (niente download intero)
-const streamCache = new Map<string, { at: number; url: string; headers: Record<string, string> }>();
-async function streamUrl(u: string, preview: boolean) {
+type Stream = { at: number; url: string; headers: Record<string, string>; title: string; duration: number; thumbs: string[] };
+const streamCache = new Map<string, Stream>();
+async function streamUrl(u: string, preview: boolean): Promise<Stream> {
   const key = u + (preview ? "#anteprima" : "");
   const c = streamCache.get(key);
   if (c && Date.now() - c.at < 50 * 60 * 1000) return c;
@@ -939,7 +945,12 @@ async function streamUrl(u: string, preview: boolean) {
   const d = JSON.parse(new TextDecoder().decode(r.stdout));
   const pick = d.url ? d : (d.requested_formats || [])[0] || {};
   if (!pick.url) throw new Error("Il sito non dà un indirizzo diretto del video.");
-  const out = { at: Date.now(), url: String(pick.url), headers: (pick.http_headers || d.http_headers || {}) as Record<string, string> };
+  // copertine dalla migliore alla peggiore (la prima a volte non esiste: es. maxresdefault sui video vecchi)
+  // deno-lint-ignore no-explicit-any
+  const thumbs = [d.thumbnail, ...((d.thumbnails || []) as any[]).slice().sort((a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0) || (b.preference ?? 0) - (a.preference ?? 0)).map((x) => x.url)]
+    .filter((x, i, a) => typeof x === "string" && /^https?:/.test(x) && a.indexOf(x) === i).slice(0, 6);
+  const out: Stream = { at: Date.now(), url: String(pick.url), headers: (pick.http_headers || d.http_headers || {}) as Record<string, string>,
+    title: String(d.title || ""), duration: Number(d.duration) || 0, thumbs };
   streamCache.set(key, out);
   return out;
 }
@@ -978,14 +989,41 @@ async function runFrame(j: AnyJob): Promise<boolean> {
   j.note = cover ? "Prendo la copertina…" : `Prendo il fotogramma a ${t.toFixed(2).replace(".", ",")} s…`;
   const loc = srcOf(j.url);
   j._meta = loc ? { title: loc.title } : j._meta || { title: j.title };
-  const dest = await uniquePath(fileName(j, ext, cover ? " (copertina)" : ` (fotogramma ${mmss(t)}${t % 1 ? "." + String(Math.round((t % 1) * 100)).padStart(2, "0") : ""})`));
+  // link senza titolo (es. più link incollati insieme): titolo e durata dal sito, così il nome del file è giusto
+  let st: Stream | null = null;
+  if (!loc && (!j.title || /^https?:/.test(String(j.title)) || !j.duration)) {
+    try { st = await streamUrl(String(j.url), true); } catch { /* proverò comunque */ }
+    if (st?.title && (!j.title || /^https?:/.test(String(j.title)))) { j.title = st.title; j._meta = { title: st.title }; }
+    if (st?.duration && !j.duration) { j.duration = st.duration; if (t > st.duration) t = Math.max(0, st.duration - 0.1); }
+  }
+  const dest = await uniquePath(fileName(j, ext, cover ? " (copertina)" : ` (fotogramma ${mmss(t)}${t % 1 ? "." + String(Math.round((t % 1) * 100)).padStart(2, "0") : ""})`), (j._outDir as string) || OUT);
   const enc = xfi ? [...(xfi.vf ? ["-vf", xfi.vf] : []), ...xfVideoArgs(xfi, ENCODERS)]
     : ext === "png" ? ["-c:v", "png", "-pix_fmt", "rgb24"] : ["-c:v", "mjpeg", "-q:v", "2", "-pix_fmt", "yuvj444p"];
   const imgMux = !xfi?.mux;   // AVIF ha il suo contenitore: "-update" vale solo per le immagini semplici
-  const run = async (input: string[]) => runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", ...input, "-frames:v", "1", ...(imgMux ? ["-update", "1"] : []), ...enc, dest], () => {});
+  // FFmpeg a volte finisce "bene" senza scrivere niente (istante oltre l'ultima immagine): conta solo un file vero
+  const run = async (input: string[]): Promise<[boolean, string]> => {
+    await rm(dest);
+    const [ok, err] = await runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", ...input, "-frames:v", "1", ...(imgMux ? ["-update", "1"] : []), ...enc, dest], () => {});
+    const size = (await Deno.stat(dest).catch(() => null))?.size || 0;
+    return [ok && size > 0, ok && !size ? `${err}\nOutput file is empty` : err];
+  };
   let ok = false, err = "";
   try { [ok, err] = await run(await frameInput(String(j.url), t, cover, false, j.thumb as string | undefined)); }
   catch (e) { err = String(e instanceof Error ? e.message : e); }
+  // istante troppo vicino alla fine (l'immagine finisce un po' prima dell'audio): torno indietro un poco
+  for (const back of [0.5, 1.5, 4]) {
+    if (ok || cover || j._cancel || !/empty|nothing was encoded|no frames/i.test(err) || t <= 0) break;
+    t = Math.max(0, t - back);
+    try { [ok, err] = await run(await frameInput(String(j.url), t, false, false)); } catch (e) { err = String(e instanceof Error ? e.message : e); }
+  }
+  // copertina del link non trovata: provo le altre copertine che il sito offre
+  if (!ok && cover && !loc && !j._cancel) {
+    try { st ||= await streamUrl(String(j.url), true); } catch { /* */ }
+    for (const u of (st?.thumbs || []).filter((x) => x !== j.thumb)) {
+      [ok, err] = await run(["-i", u]);
+      if (ok || j._cancel) break;
+    }
+  }
   // il sito non lascia leggere a pezzi: scarico il video (solo immagine) e prendo il fotogramma dal file
   if (!ok && !cover && !loc && !j._cancel) {
     log("fotogramma diretto non riuscito, scarico il video:", err.slice(-300));
@@ -1002,6 +1040,73 @@ async function runFrame(j: AnyJob): Promise<boolean> {
   if (!ok || !await exists(dest)) { await rm(dest); return fail(j, /^[A-Z]/.test(err) && err.length < 200 ? err : `Non riesco a prendere ${cover ? "la copertina" : "il fotogramma"}. ${err.trim().split("\n").pop()?.slice(0, 160) || ""}`); }
   j._files = [dest];
   return true;
+}
+
+
+// ---------- autodiagnosi: prova ogni formato con l'FFmpeg di questo computer ----------
+// Crea un breve video di prova (1080p, 25 fps, audio 5.1) e un audio stereo, li converte in tutti i formati
+// con lo stesso percorso delle conversioni vere, poi controlla che ogni file si apra e si legga fino in fondo.
+type TestRes = { k: string; label: string; mode: string; group: string; ok: boolean; err?: string; ms: number };
+const selftest = { running: false, done: 0, total: 0, results: [] as TestRes[], missing: [] as { k: string; label: string; mode: string }[], at: 0 };
+const BASE_FORMATS: [string, string][] = [["mp4", "video"], ["mov", "video"], ["mkv", "video"], ["webm", "video"], ["avi", "video"],
+  ["prores", "video"], ["prores4444", "video"], ["hap", "video"], ["hapq", "video"],
+  ["mp3", "audio"], ["m4a", "audio"], ["alac", "audio"], ["flac", "audio"], ["wav", "audio"], ["opus", "audio"], ["ogg", "audio"],
+  ["jpg", "frame"], ["png", "frame"]];
+async function decodeOk(path: string, k = ""): Promise<string | null> {
+  let input = ["-i", path];
+  const st = await Deno.stat(path).catch(() => null);
+  if (!st) return "file mancante";
+  // FFmpeg non sa leggere i WebP animati (li scrive soltanto): controllo l'intestazione del file
+  if (k === "webp_anim") {
+    const h = new TextDecoder("latin1").decode((await Deno.readFile(path)).slice(0, 64));
+    return h.startsWith("RIFF") && h.includes("WEBP") && h.includes("ANIM") ? null : "WebP animato non valido";
+  }
+  if (st.isDirectory) {
+    const names: string[] = []; for await (const e of Deno.readDir(path)) if (e.isFile) names.push(e.name);
+    names.sort(); if (!names.length) return "cartella vuota";
+    const first = names[0], dot = first.lastIndexOf("."), us = first.lastIndexOf("_");
+    input = ["-f", "image2", "-i", join(path, `${first.slice(0, us)}_%06d${first.slice(dot)}`)];
+  } else if (!st.size) return "file vuoto";
+  const r = await new Deno.Command(FFMPEG, { args: ["-v", "error", "-xerror", ...input, "-f", "null", "-"], stdout: "null", stderr: "piped" }).output();
+  const e = new TextDecoder().decode(r.stderr).trim();
+  return r.success && !e ? null : (e.split("\n").pop() || "non si legge").slice(0, 160);
+}
+async function runSelftest() {
+  if (selftest.running) return;
+  Object.assign(selftest, { running: true, done: 0, results: [], at: Date.now() });
+  const dir = join(TMP, `prova-formati-${Date.now()}`);
+  try {
+    await Deno.mkdir(dir, { recursive: true });
+    const vsrc = join(dir, "sorgente.mov"), asrc = join(dir, "sorgente.wav");
+    await new Deno.Command(FFMPEG, { args: ["-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=25:d=2", "-f", "lavfi", "-i", "sine=f=440:d=2:sample_rate=48000",
+      "-filter_complex", "[1]pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0[a]", "-map", "0", "-map", "[a]", "-c:v", "mjpeg", "-q:v", "3", "-c:a", "pcm_s16le", vsrc], stdout: "null", stderr: "null" }).output();
+    await new Deno.Command(FFMPEG, { args: ["-hide_banner", "-y", "-f", "lavfi", "-i", "sine=f=330:d=2:sample_rate=44100", "-ac", "2", "-c:a", "pcm_s16le", asrc], stdout: "null", stderr: "null" }).output();
+    const vid = addSource(vsrc, "Prova.mov", true), aud = addSource(asrc, "Prova.wav", true);
+    const list = [...BASE_FORMATS.filter(([k]) => !(k in PRO) || proAvailable.includes(k)), ...xfOk.map((k) => [k, XF[k].mode] as [string, string])];
+    selftest.missing = Object.keys(XF).filter((k) => !xfOk.includes(k)).map((k) => ({ k, label: XF[k].label, mode: XF[k].mode }));
+    selftest.total = list.length;
+    for (const [k, mode] of list) {
+      const t0 = Date.now();
+      const j: AnyJob = { id: `prova${selftest.done}`, url: `local:${mode === "audio" ? aud : vid}`, mode, format: k, quality: "best", bitrate: "256", local: true,
+        thumbnail: false, title: "Prova", aspect: "orig", fit: "crop", separate: "none", stems: [], client: "", loud: "off", fps: "orig", res: "orig",
+        channels: mode === "audio" ? 2 : 6, frameKind: "frame", frameT: 1, start: null, end: null, stage: "waiting", created_at: Date.now() / 1000, _outDir: dir };
+      j.phases = planPhases(j);
+      const res: TestRes = { k, label: FORMAT_LABEL[k] || k, mode, group: XF[k]?.group || "Di base", ok: false, ms: 0 };
+      try {
+        const okRun = mode === "frame" ? await runFrame(j) : await convertLocal(j, srcOf(j.url)!.path);
+        const out = (j._files || [])[0];
+        if (!okRun || !out) res.err = String(j.error || "conversione non riuscita").slice(0, 200);
+        else { const e = await decodeOk(out, k); if (e) res.err = `il file non si legge bene: ${e}`; else res.ok = true; }
+        for (const f of j._files || []) await rm(f);
+      } catch (e) { res.err = String(e instanceof Error ? e.message : e).slice(0, 200); }
+      res.ms = Date.now() - t0;
+      selftest.results.push(res); selftest.done++;
+      if (!res.ok) log(`autodiagnosi: ${k} non funziona: ${res.err}`);
+    }
+    sources.delete(vid); sources.delete(aud);
+    log(`autodiagnosi finita: ${selftest.results.filter((r) => r.ok).length} di ${selftest.total} formati funzionano`);
+  } catch (e) { log("autodiagnosi interrotta", e); }
+  finally { await rm(dir); selftest.running = false; }
 }
 
 function fail(j: AnyJob, msg: string): false {
@@ -1272,7 +1377,7 @@ async function route(req: Request, remote = false): Promise<Response> {
       remote, separator: await exists(MODEL), stemsReady: await exists(STEMS_READY),
       xf: Object.entries(XF).map(([k, f]) => ({ k, mode: f.mode, label: f.label, sub: f.sub, group: f.group, ext: f.ext, ok: xfOk.includes(k),
         maxCh: f.ac || f.maxCh || null, lossless: !!f.lossless, aBr: !!f.aBr, kbps: f.kbps || null, mbps: f.mbps || null, seq: !!f.seq,
-        noAudio: f.a === null, heavy: !!f.heavy, size: f.size || null, fps: f.fps || null, maxW: f.maxW || null })) });
+        noAudio: f.a === null, heavy: !!f.heavy, size: f.size || null, fps: f.fps || null, maxW: f.maxW || null, mult: f.mult || null, fixed: f.fixed || null })) });
   }
   if (p === "/api/settings") {
     if (m === "POST") {
@@ -1459,7 +1564,7 @@ async function route(req: Request, remote = false): Promise<Response> {
     if (mode === "video" && b.res === "custom") {
       resW = Math.round(Number(b.resW)); resH = Math.round(Number(b.resH));
       if (!(resW >= 16 && resW <= 8192 && resH >= 16 && resH <= 8192)) return json({ error: "Misura non valida: scrivi larghezza e altezza tra 16 e 8192 pixel." }, 400);
-      const q = fmt === "hap" || fmt === "hapq" ? 4 : 2;
+      const q = fmt === "hap" || fmt === "hapq" ? 4 : Math.max(2, xfOf(fmt)?.mult || 2);
       resW = Math.round(resW / q) * q; resH = Math.round(resH / q) * q;
     }
     if (fmt in PRO && !proAvailable.includes(fmt)) return json({ error: `${FORMAT_LABEL[fmt]} non è disponibile in questo FFmpeg.` }, 400);
@@ -1547,6 +1652,10 @@ async function route(req: Request, remote = false): Promise<Response> {
       }
       return json({ error: "File non disponibile: forse è stato spostato o eliminato." }, 404);
     }
+  }
+  if (p === "/api/selftest") {
+    if (m === "POST" && !remote) { if (!(await toolsReady()).ff) return json({ error: "Brsket si sta ancora preparando." }, 400); runSelftest(); }
+    return json(selftest);
   }
   if (p === "/api/open-privacy" && m === "POST" && !remote) {
     if (MAC) new Deno.Command("open", { args: ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"] }).spawn();
