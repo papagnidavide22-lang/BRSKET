@@ -9,6 +9,9 @@ Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che
 
 Poi Brsket si aggiorna da sola.
 
+## Novità della 6.7
+- Se Brsket è aperta da Download o dal DMG (fuori da Applicazioni) e non può aggiornarsi, ora lo dice con una notifica e si sposta da sola in Applicazioni con un clic (menu Brsket → Sposta in Applicazioni).
+
 ## Novità della 6.6
 - Le tracce 5.1 di YouTube (AC-3 / E-AC-3) ora vengono trovate e scaricate vere, non ricreate dallo stereo.
 - Con "Stereo" scelto, i video mono escono in stereo.

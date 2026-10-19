@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         Updater.shared.log = { [weak self] t in self?.note(t) }
         Updater.shared.say = { [weak self] t in self?.pageToast(t) }
         Updater.shared.onReady = { [weak self] v in self?.updateReady(v) }
+        Updater.shared.onBlocked = { [weak self] v in self?.updateBlocked(v) }
+        if !Updater.shared.installable { addMoveItem() }
         Updater.shared.start()
         UNUserNotificationCenter.current().delegate = self
         // chiedi subito il permesso per le notifiche (una volta sola: poi macOS lo ricorda)
@@ -219,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func userNotificationCenter(_ c: UNUserNotificationCenter, didReceive r: UNNotificationResponse, withCompletionHandler done: @escaping () -> Void) {
         note("clic sulla notifica")
         if r.notification.request.content.userInfo["update"] != nil { done(); Updater.shared.restartNow(); return }
+        if r.notification.request.content.userInfo["move"] != nil { done(); DispatchQueue.main.async { self.moveToApplications() }; return }
         if let id = r.notification.request.content.userInfo["id"] as? String, !id.isEmpty {
             var req = URLRequest(url: URL(string: URL_BASE + "/api/reveal")!)
             req.httpMethod = "POST"
@@ -341,6 +344,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         c.userInfo = ["update": v]
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "update-\(v)", content: c, trigger: nil))
     }
+    // ---------- fuori da Applicazioni (aperta da Download o dal DMG): non può aggiornarsi ----------
+    var moveItem: NSMenuItem?
+    func addMoveItem() {
+        guard moveItem == nil, let appMenu = NSApp.mainMenu?.items.first?.submenu else { return }
+        let it = NSMenuItem(title: "Sposta in Applicazioni (per gli aggiornamenti)", action: #selector(moveToApplications), keyEquivalent: "")
+        it.target = self
+        appMenu.insertItem(it, at: 2)
+        moveItem = it
+    }
+    func updateBlocked(_ v: String) {
+        addMoveItem()
+        pageToast("È uscita Brsket \(v), ma questa copia non è nella cartella Applicazioni e non può aggiornarsi: menu Brsket → Sposta in Applicazioni.")
+        let key = "avvisoSposta-\(v)"
+        if UserDefaults.standard.bool(forKey: key) { return }
+        UserDefaults.standard.set(true, forKey: key)
+        let c = UNMutableNotificationContent()
+        c.title = "Brsket \(v) è disponibile"
+        c.body = "Questa copia non è nella cartella Applicazioni e non può aggiornarsi. Clicca per spostarla lì e aggiornarla."
+        c.userInfo = ["move": "1"]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "sposta-\(v)", content: c, trigger: nil))
+    }
+    @objc func moveToApplications() {
+        let fm = FileManager.default
+        let src = Bundle.main.bundleURL
+        let sys = URL(fileURLWithPath: "/Applications")
+        let dir = fm.isWritableFile(atPath: sys.path) ? sys : fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent("Brsket.app")
+        if fm.fileExists(atPath: dest.path) { try? fm.trashItem(at: dest, resultingItemURL: nil) }
+        guard Updater.run("/usr/bin/ditto", [src.path, dest.path]) == 0 else {
+            pageToast("Non riesco a copiare Brsket in \(dir.path). Trascinala tu nella cartella Applicazioni."); return
+        }
+        _ = Updater.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", dest.path])
+        note("spostata in \(dest.path)")
+        quitting = true
+        var req = URLRequest(url: URL(string: URL_BASE + "/api/quit")!); req.httpMethod = "POST"; req.timeoutInterval = 1.5
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
+        _ = sem.wait(timeout: .now() + 1.6)
+        if let l = launcher, l.isRunning { l.terminate() }
+        let cfg = NSWorkspace.OpenConfiguration(); cfg.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: dest, configuration: cfg) { _, _ in DispatchQueue.main.async { exit(0) } }
+    }
+
     func pageToast(_ t: String) {
         web.evaluateJavaScript("typeof toast==='function' && toast(\(jsString(t)), 'ok')", completionHandler: nil)
     }

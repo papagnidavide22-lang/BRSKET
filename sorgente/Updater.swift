@@ -10,6 +10,7 @@ final class Updater: NSObject {
     var log: ((String) -> Void)?
     var say: ((String) -> Void)?          // messaggio nella finestra di Brsket
     var onReady: ((String) -> Void)?      // aggiornamento pronto (notifica + voce di menu)
+    var onBlocked: ((String) -> Void)?    // c'è una versione nuova ma l'app non è in Applicazioni
 
     func start() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { self.check(manual: false) }
@@ -50,7 +51,7 @@ final class Updater: NSObject {
                     return
                 }
                 guard self.installable else {
-                    DispatchQueue.main.async { self.busy = false; if manual { self.info("Sposta Brsket in Applicazioni", "Per aggiornarsi da sola Brsket deve stare nella cartella Applicazioni.") } }
+                    DispatchQueue.main.async { self.busy = false; self.onBlocked?(ver) }
                     return
                 }
                 self.download(zurl, version: ver, manual: manual)
@@ -81,7 +82,7 @@ final class Updater: NSObject {
             guard self.installable else {
                 DispatchQueue.main.async {
                     self.busy = false
-                    if manual { self.info("Sposta Brsket in Applicazioni", "Per aggiornarsi da sola Brsket deve stare nella cartella Applicazioni, non nel disco del DMG.") }
+                    self.onBlocked?(ver)
                 }
                 return
             }
