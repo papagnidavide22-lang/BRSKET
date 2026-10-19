@@ -22,3 +22,6 @@ Poi Brsket si aggiorna da sola.
 
 ## Aggiornamenti
 La cartella `aggiornamenti/` contiene l'ultima versione: `latest.json` dice quale è, `Brsket.zip` è il pacchetto che l'app scarica da sola, `Brsket.dmg` è per le nuove installazioni.
+
+## Codice
+Il codice sorgente completo è nella cartella `sorgente/`.

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>Brsket</string>
+  <key>CFBundleDisplayName</key><string>Brsket</string>
+  <key>CFBundleIdentifier</key><string>it.davide.brsket</string>
+  <key>CFBundleExecutable</key><string>Brsket</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>6.6</string>
+  <key>CFBundleShortVersionString</key><string>6.6</string>
+  <key>CFBundleDevelopmentRegion</key><string>it</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>NSHumanReadableCopyright</key><string>Brsket — scarica video e audio sul tuo Mac.</string>
+  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>BrsketUpdateRepo</key><string>papagnidavide22-lang/brsket</string>
+</dict></plist>
