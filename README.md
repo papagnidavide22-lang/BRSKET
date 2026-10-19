@@ -3,11 +3,17 @@
 Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che ti serve. App per Mac (macOS 13 o successivo, Apple Silicon e Intel).
 
 ## Installare
-1. Scarica **[Brsket.dmg](https://raw.githubusercontent.com/papagnidavide22-lang/BRSKET/main/aggiornamenti/Brsket.dmg)**.
+1. Scarica **[Brsket.dmg](https://github.com/papagnidavide22-lang/BRSKET/releases/latest/download/Brsket.dmg)**.
 2. Aprilo e trascina Brsket in Applicazioni.
 3. La prima volta: clic destro su Brsket → Apri → Apri.
 
 Poi Brsket si aggiorna da sola.
+
+## Novità della 6.9
+- **Converti i file che hai già**: trascina un file video o audio nella finestra (o sull'icona nel Dock, o scegli "Converti un file dal computer") e usa le stesse opzioni dei link: HAP, ProRes, 9:16, volume uniforme, taglio, canali. Il file originale non viene toccato.
+- **Fotogramma e copertina**: salva un fotogramma a un istante preciso (con anteprima e avanti/indietro di un fotogramma) o la copertina originale, in JPG o PNG. Funziona con i link e con i file.
+- **Risoluzione su misura**: scrivi la misura esatta, per esempio 1152 × 576 o 3840 × 768 per un ledwall, e scegli bande nere o ritaglio.
+- **Preset**: salvi una combinazione di impostazioni e la riusi con un clic. Già pronti "Ledwall fiera" (HAP, 50 fps, 1080p) e "Reel Instagram" (9:16, MP4, −14 LUFS).
 
 ## Novità della 6.8
 - Nuovo logo: la U nera su sfondo panna.

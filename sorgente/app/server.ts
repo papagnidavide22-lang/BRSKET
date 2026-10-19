@@ -29,6 +29,8 @@ const MODEL_URL = "https://github.com/TRvlvr/model_repo/releases/download/all_pu
 const STEMS_READY = join(SEP_DIR, ".strumenti-pronti");
 const PY = "3.11";
 await Deno.mkdir(TMP, { recursive: true });
+// copie temporanee di file caricati rimaste da una sessione precedente
+try { for await (const e of Deno.readDir(TMP)) if (e.name.startsWith("up-")) await Deno.remove(join(TMP, e.name)).catch(() => {}); } catch { /* */ }
 
 const ENV: Record<string, string> = {
   ...Deno.env.toObject(),
@@ -54,8 +56,14 @@ const exists = async (p: string) => { try { await Deno.stat(p); return true; } c
 const rm = async (p?: string | null) => { if (p) try { await Deno.remove(p, { recursive: true }); } catch { /* già rimosso */ } };
 
 // ---------- impostazioni ----------
-type Settings = { schema: string; notify: boolean; lan: boolean; token: string; clients: string[]; cookies: string };
+type Preset = { name: string; opts: Record<string, unknown> };
+type Settings = { schema: string; notify: boolean; lan: boolean; token: string; clients: string[]; cookies: string; presets?: Preset[] };
 const DEFAULTS: Settings = { schema: "{titolo}_{taglio}", notify: true, lan: false, token: "", clients: [], cookies: "" };
+// preset di partenza (si possono cancellare: dopo restano quelli scelti)
+const DEFAULT_PRESETS: Preset[] = [
+  { name: "Ledwall fiera", opts: { mode: "video", format: "hap", aspect: "orig", fps: "50", res: "1080", loud: "off", channels: 2 } },
+  { name: "Reel Instagram", opts: { mode: "video", format: "mp4", aspect: "9:16", fit: "crop", fps: "orig", res: "orig", loud: "-14", channels: 2 } },
+];
 // browser da cui yt-dlp può prendere l'accesso già fatto (Instagram, Facebook, YouTube con limite d'età…)
 const COOKIE_BROWSERS = ["safari", "chrome", "firefox", "brave", "edge", "arc", "opera", "vivaldi", "chromium"];
 const cookieArgs = (): string[] => settings.cookies && COOKIE_BROWSERS.includes(settings.cookies) ? ["--cookies-from-browser", settings.cookies] : [];
@@ -65,6 +73,7 @@ const RES: Record<string, [number, number]> = { "1080": [1920, 1080], "2160": [3
 let settings: Settings = { ...DEFAULTS };
 try { settings = { ...DEFAULTS, ...JSON.parse(await Deno.readTextFile(SETTINGS_FILE)) }; } catch { /* prima volta */ }
 if (!settings.token) settings.token = String(Math.floor(100000 + Math.random() * 900000));
+if (!Array.isArray(settings.presets)) settings.presets = DEFAULT_PRESETS;
 const saveSettings = () => Deno.writeTextFile(SETTINGS_FILE, JSON.stringify(settings, null, 2)).catch(() => {});
 await saveSettings();
 
@@ -74,10 +83,11 @@ const AUDIO = new Set(["mp3", "m4a", "alac", "flac", "wav", "opus", "ogg"]);
 const LOSSLESS = new Set(["flac", "wav", "alac"]);
 const THUMB_OK = new Set(["mp3", "m4a", "alac", "flac", "opus", "mp4", "mkv"]);
 const AUDIO_EXT: Record<string, string> = { alac: "m4a" };
+const FRAME = new Set(["jpg", "png"]);
 const FORMAT_LABEL: Record<string, string> = {
   mp4: "MP4", mov: "MOV", mkv: "MKV", webm: "WebM", avi: "AVI", mp3: "MP3", m4a: "M4A", alac: "ALAC",
   flac: "FLAC", wav: "WAV", opus: "Opus", ogg: "OGG",
-  prores: "ProRes", prores4444: "ProRes 4444", hap: "HAP", hapq: "HAP Q",
+  prores: "ProRes", prores4444: "ProRes 4444", hap: "HAP", hapq: "HAP Q", jpg: "JPG", png: "PNG",
 };
 const PRO: Record<string, { encoder: string; args: string[]; mult4?: boolean }> = {
   prores: { encoder: "prores_ks", args: ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-vendor", "apl0", "-c:a", "pcm_s16le"] },
@@ -244,16 +254,35 @@ function planPhases(j: AnyJob): Phase[] {
   for (const x of list) x.w = x.w / tot;
   return list;
 }
+// misura finale scelta per lo show: 1080p, 4K o su misura (es. 1152x576 per un ledwall)
+const customRes = (j: AnyJob): [number, number] | null => j.res === "custom" ? [Number(j.resW), Number(j.resH)] : null;
+const resLabel = (j: AnyJob) => j.res === "custom" ? `${j.resW}×${j.resH}` : j.res === "2160" ? "4K" : j.res === "1080" ? "1080p" : "";
+function resToken(j: AnyJob, info: Probe): string {
+  const cr = customRes(j);
+  const aspect = !cr && j.aspect && j.aspect !== "orig" ? ASPECTS[j.aspect as string] : null;
+  const kk = j.res === "2160" ? 2 : 1;
+  let r = cr ? `${cr[0]}x${cr[1]}` : aspect ? `${aspect[0] * kk}x${aspect[1] * kk}` : j.res && j.res !== "orig" ? `${j.res}p`
+    : info.height ? `${Math.min(info.width || info.height, info.height)}p` : "";
+  if (j.fps && j.fps !== "orig") r += cr || aspect ? `@${j.fps}` : `${j.fps}`;
+  return r;
+}
 function planPhasesBase(j: AnyJob): Phase[] {
   const ph = (key: string, label: string, w: number): Phase => ({ key, label, w, p: 0, state: "todo" });
+  if (j.mode === "frame") return [ph("frame", j.frameKind === "cover" ? "Copertina" : "Fotogramma", 1)];
   const sep = sepMode(j);
+  if (j.local) {
+    if (sep !== "none") return [ph("separate", sep === "stems" ? "Separazione strumenti" : "Separazione voce", 0.88), ph("convert", "Salvataggio", 0.12)];
+    const fmt = j.format as string;
+    const extra = [resLabel(j), j.fps && j.fps !== "orig" ? `${j.fps} fps` : "", j.aspect && j.aspect !== "orig" && !customRes(j) ? String(j.aspect) : ""].filter(Boolean).join(" ");
+    return [ph("convert", `Conversione ${FORMAT_LABEL[fmt]}${extra ? " " + extra : ""}`, 1)];
+  }
   if (sep !== "none") {
     return [ph("download", "Download", 0.12), ph("separate", sep === "stems" ? "Separazione strumenti" : "Separazione voce", 0.78), ph("convert", "Salvataggio", 0.1)];
   }
   if (needsTmpPost(j)) {
     const fmt = j.format as string;
     const heavy = fmt in PRO || (j.aspect && j.aspect !== "orig") || showFix(j);
-    return [ph("download", "Download", heavy ? 0.35 : 0.85), ph("convert", heavy ? `Conversione ${FORMAT_LABEL[fmt]}${showFix(j) ? ` ${j.res !== "orig" ? (j.res === "2160" ? "4K" : "1080p") : ""} ${j.fps !== "orig" ? j.fps + " fps" : ""}`.replace(/\s+/g, " ").trimEnd() : ""}` : "Preparazione MOV", heavy ? 0.65 : 0.15)];
+    return [ph("download", "Download", heavy ? 0.35 : 0.85), ph("convert", heavy ? `Conversione ${FORMAT_LABEL[fmt]}${showFix(j) ? ` ${resLabel(j)} ${j.fps !== "orig" ? j.fps + " fps" : ""}`.replace(/\s+/g, " ").trimEnd() : ""}` : "Preparazione MOV", heavy ? 0.65 : 0.15)];
   }
   return [ph("download", "Download", 0.9), ph("finish", "Finalizzazione", 0.1)];
 }
@@ -484,15 +513,19 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
   const fmt = j.format as string;
   const pro = PRO[fmt];
   const k = j.res === "2160" ? 2 : 1;   // 4K: proporzioni social al doppio (es. 9:16 = 2160x3840)
-  const aspect = j.aspect && j.aspect !== "orig" ? ASPECTS[j.aspect as string].map((n) => n * k) as [number, number] : null;
-  const forced = !aspect && j.res && j.res !== "orig" ? RES[j.res as string] : null;
+  const cr = customRes(j);   // misura su misura: vince sulle proporzioni
+  const aspect = !cr && j.aspect && j.aspect !== "orig" ? ASPECTS[j.aspect as string].map((n) => n * k) as [number, number] : null;
+  const forced = cr || (!aspect && j.res && j.res !== "orig" ? RES[j.res as string] : null);
   const fpsF = j.fps && j.fps !== "orig" ? `fps=${j.fps}` : "";
   const extra = [fpsF, pro?.mult4 ? "scale=trunc(iw/4)*4:trunc(ih/4)*4" : ""].filter(Boolean).join(",");
   const args: string[] = [];
   if (forced) {
     const [W, H] = forced;
     // risoluzione esatta per lo show: adatta senza deformare, bande nere se le proporzioni sono diverse
-    let chain = `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
+    // (oppure, su misura con "Ritaglio", riempie tutta la misura tagliando i bordi)
+    let chain = cr && j.resFit === "crop"
+      ? `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},setsar=1`
+      : `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
     if (extra) chain += `,${extra}`;
     args.push("-filter_complex", `${chain}[v]`, "-map", "[v]", "-map", "0:a?");
   } else if (aspect) {
@@ -519,6 +552,19 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
     else args.push("-c:a", "aac", "-b:a", oc > 2 ? `${oc * 64}k` : "256k");
     args.push("-movflags", "+faststart");
     return args;
+  }
+  // file dal computer senza modifiche all'immagine: copio il video così com'è (veloce e senza perdita)
+  if (j.local && !aspect && !forced && !extra && j.start == null && j.end == null) {
+    const vOk = fmt === "mkv" ? !!info.vcodec : fmt === "webm" ? ["vp8", "vp9", "av1"].includes(info.vcodec) : fmt === "mp4" && ["h264", "hevc"].includes(info.vcodec);
+    if (vOk) {
+      args.push("-c:v", "copy", ...(fmt === "mp4" && info.vcodec === "hevc" ? ["-tag:v", "hvc1"] : []));
+      const aOk = !to && (fmt === "mkv" ? true : fmt === "webm" ? ["opus", "vorbis"].includes(info.acodec) : ["aac", "alac", "mp3", "ac3", "eac3"].includes(info.acodec));
+      if (aOk) args.push("-c:a", "copy");
+      else if (fmt === "webm") args.push("-c:a", "libopus", "-b:a", oc > 2 ? `${oc * 64}k` : "160k");
+      else args.push("-c:a", "aac", "-b:a", oc > 2 ? `${oc * 64}k` : "256k");
+      if (fmt === "mp4") args.push("-movflags", "+faststart");
+      return args;
+    }
   }
   if (fmt === "webm") args.push("-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-row-mt", "1", "-c:a", "libopus", "-b:a", "160k");
   else if (fmt === "avi") args.push("-c:v", "mpeg4", "-q:v", "3", "-c:a", "libmp3lame", "-ac", "2", "-b:a", "192k");
@@ -613,7 +659,8 @@ const TORCH_INDEX = LINUX ? ["--index", "https://download.pytorch.org/whl/cpu", 
 async function prepWav(j: AnyJob, src: string): Promise<string | null> {
   const wav = join(TMP, `${j.id}-in.wav`);
   (j._tmp ||= []).push(wav);
-  const [ok, err] = await runProc(j, FFMPEG, ["-hide_banner", "-y", "-i", src, "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", wav], () => {});
+  const [pre, post] = j.local ? trimArgs(j, (await probe(src)).duration) : [[], []];
+  const [ok, err] = await runProc(j, FFMPEG, ["-hide_banner", "-y", ...pre, "-i", src, ...post, "-map", "0:a:0", "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", wav], () => {});
   if (!ok) { fail(j, `Preparazione audio non riuscita. ${err.trim().split("\n").pop() || ""}`); return null; }
   return wav;
 }
@@ -725,6 +772,184 @@ async function cutLocal(j: AnyJob, src: string): Promise<boolean> {
   return true;
 }
 
+
+// ---------- file dal computer (trascinati o scelti) ----------
+// "local:<id>": un file già sul Mac (percorso vero, non viene mai toccato) o caricato dalla pagina (copia temporanea)
+type Source = { path: string; name: string; title: string; temp: boolean; at: number };
+const sources = new Map<string, Source>();
+const MEDIA_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|mxf|mts|m2ts|ts|mpg|mpeg|wmv|flv|3gp|dv|mp3|m4a|aac|wav|aif|aiff|flac|ogg|opus|wma|caf|ac3|eac3)$/i;
+function addSource(path: string, name: string, temp: boolean): string {
+  const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  sources.set(id, { path, name, title: name.replace(/\.[^.]+$/, ""), temp, at: Date.now() });
+  return id;
+}
+const srcOf = (u: unknown) => { const m = String(u || "").match(/^local:(\w+)$/); return m ? sources.get(m[1]) : undefined; };
+// le copie caricate dalla pagina restano finché servono (puoi convertire lo stesso file più volte):
+// si cancellano dopo 12 ore senza usarle, all'uscita e al prossimo avvio
+async function sweepUploads(all = false) {
+  for (const [id, s] of sources) {
+    if (!s.temp) continue;
+    const busy = [...jobs.values()].some((x) => x.url === `local:${id}` && !["done", "error", "cancelled"].includes(x.stage));
+    if (!busy && (all || Date.now() - s.at > 12 * 3600 * 1000)) { await rm(s.path); sources.delete(id); }
+  }
+}
+setInterval(() => sweepUploads().catch(() => {}), 3600 * 1000);
+async function localInfo(id: string) {
+  const s = sources.get(id)!;
+  const r = await new Deno.Command(FFPROBE, { args: ["-v", "error", "-show_entries",
+    "format=duration,size:stream=index,codec_type,codec_name,width,height,avg_frame_rate,channels:stream_disposition=attached_pic", "-of", "json", s.path],
+    stdout: "piped", stderr: "null" }).output();
+  // deno-lint-ignore no-explicit-any
+  let pj: any = {};
+  try { pj = JSON.parse(new TextDecoder().decode(r.stdout)); } catch { /* */ }
+  // deno-lint-ignore no-explicit-any
+  const st = (pj.streams || []) as any[];
+  const vid = st.find((x) => x.codec_type === "video" && !x.disposition?.attached_pic);
+  const cover = st.find((x) => x.codec_type === "video" && x.disposition?.attached_pic);
+  const auds = st.filter((x) => x.codec_type === "audio");
+  if (!vid && !auds.length) return null;
+  const dur = parseFloat(pj.format?.duration) || 0;
+  const [fn, fd] = String(vid?.avg_frame_rate || "0/1").split("/").map(Number);
+  const tracks: { channels: number; codecs: string[] }[] = [];
+  for (const a of auds) {
+    const c = Number(a.channels) || 0; if (!c) continue;
+    let t = tracks.find((x) => x.channels === c);
+    if (!t) tracks.push(t = { channels: c, codecs: [] });
+    const name = String(a.codec_name || "").replace(/^pcm_.*/, "pcm");
+    if (name && !t.codecs.includes(name)) t.codecs.push(name);
+  }
+  tracks.sort((a, b) => a.channels - b.channels);
+  return {
+    title: s.title, uploader: "File dal computer", site: s.name.split(".").pop()?.toUpperCase() || "", duration: dur || null,
+    thumbnail: vid ? `/api/frame?src=local:${id}&t=${Math.round(dur * 0.1 * 10) / 10}&w=640` : cover ? `/api/frame?src=local:${id}&cover=1&w=640` : null,
+    heights: vid?.height ? [vid.height] : [], has_video: !!vid, tracks, est: {}, audio_bytes: 0,
+    fps: fd ? Math.round(fn / fd * 1000) / 1000 : 25, ratio: vid?.width && vid?.height ? vid.width / vid.height : 16 / 9, in_playlist: false,
+    local: true, src: `local:${id}`, cover: !!cover, size: Number(pj.format?.size) || 0,
+    width: vid?.width || 0, height: vid?.height || 0, vcodec: vid?.codec_name || "", acodec: auds[0]?.codec_name || "",
+  };
+}
+// taglio sul file dal computer: dentro la stessa conversione (un passaggio solo, preciso al fotogramma)
+function trimArgs(j: AnyJob, dur: number): [string[], string[], number] {
+  if (j.start == null && j.end == null) return [[], [], dur];
+  const st = Number(j.start) || 0;
+  const end = j.end != null ? Math.min(Number(j.end), dur || Number(j.end)) : dur;
+  const len = Math.max(0.1, end - st);
+  return [st > 0 ? ["-ss", String(st)] : [], ["-t", String(len)], len];
+}
+async function convertLocal(j: AnyJob, src: string): Promise<boolean> {
+  const info = await probe(src);
+  const sep = sepMode(j);
+  if (sep !== "none") {
+    if (!info.acodec) return fail(j, "Questo file non ha audio.");
+    return sep === "stems" ? await separateStems(j, src) : await separateVocals(j, src);
+  }
+  const fmt = j.format as string, video = j.mode === "video";
+  if (!video && !info.acodec) return fail(j, "Questo file non ha audio.");
+  if (video && !info.vcodec) return fail(j, "Questo file non ha video: scegli Solo audio.");
+  const ext = video ? (fmt in PRO || fmt === "mov" ? "mov" : fmt) : (AUDIO_EXT[fmt] || fmt);
+  const [pre, post, len] = trimArgs(j, info.duration);
+  let args: string[];
+  if (video) {
+    j._res = resToken(j, info);
+    args = videoArgs(j, info);
+  } else {
+    const to = targetChannels(j, info.channels), oc = to || info.channels;
+    const br = !LOSSLESS.has(fmt) && oc > 2 && !["mp3", "ogg"].includes(fmt) ? String(Math.max(Number(j.bitrate) || 0, oc * 64)) : String(j.bitrate);
+    args = ["-map", "0:a:0", "-vn", ...chanArgs(info.channels, to), ...audioArgs(fmt, br)];
+    // WAV e FLAC da un file a 24 bit restano a 24 bit
+    if (fmt === "wav" && /^pcm_s(24|32)/.test(info.acodec)) args.push("-c:a", "pcm_s24le");
+    if (fmt === "m4a" || fmt === "alac") args.push("-movflags", "+faststart");
+  }
+  const dest = await uniquePath(fileName(j, ext));
+  setPhase(j, "convert", 0, "convert");
+  const [ok, err] = await runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", "-progress", "pipe:1", ...pre, "-i", src, ...post,
+    ...args, "-map_metadata", "0", "-metadata", `title=${(j._meta as Record<string, string>)?.title || j.title}`, dest], ffmpegProgress(j, "convert", len));
+  if (j._cancel || !ok) {
+    await rm(dest);
+    if (!j._cancel) { log("conversione file locale non riuscita:", err.slice(-400)); fail(j, `Conversione ${FORMAT_LABEL[fmt]} non riuscita. ${err.trim().split("\n").pop()?.slice(0, 200) || ""}`); }
+    return false;
+  }
+  j._files = [dest];
+  return true;
+}
+
+// ---------- fotogrammi e copertine ----------
+// indirizzo diretto del video sul sito: ffmpeg legge solo il pezzo che serve (niente download intero)
+const streamCache = new Map<string, { at: number; url: string; headers: Record<string, string> }>();
+async function streamUrl(u: string, preview: boolean) {
+  const key = u + (preview ? "#anteprima" : "");
+  const c = streamCache.get(key);
+  if (c && Date.now() - c.at < 50 * 60 * 1000) return c;
+  const f = preview ? "bv*[height<=720][vcodec!^=av01]/bv*[height<=720]/b[height<=720]/bv*/b" : "bv*[vcodec!^=av01]/bv*/b";
+  const ic = infoCache.get(u);
+  const src = ic && Date.now() - ic.at < 20 * 60 * 1000 ? ["--load-info-json", ic.path] : ["--no-playlist", "--", u];
+  const r = await new Deno.Command(YTDLP, { args: ["-j", "--no-warnings", "-f", f, ...cookieArgs(), ...src], env: ENV, stdout: "piped", stderr: "piped" }).output();
+  if (r.code !== 0) throw new Error(cleanError(new TextDecoder().decode(r.stderr)));
+  const d = JSON.parse(new TextDecoder().decode(r.stdout));
+  const pick = d.url ? d : (d.requested_formats || [])[0] || {};
+  if (!pick.url) throw new Error("Il sito non dà un indirizzo diretto del video.");
+  const out = { at: Date.now(), url: String(pick.url), headers: (pick.http_headers || d.http_headers || {}) as Record<string, string> };
+  streamCache.set(key, out);
+  return out;
+}
+function headerArgs(h: Record<string, string>): string[] {
+  const ua = h["User-Agent"];
+  const rest = Object.entries(h).filter(([k]) => k !== "User-Agent").map(([k, v]) => `${k}: ${v}\r\n`).join("");
+  return [...(ua ? ["-user_agent", ua] : []), ...(rest ? ["-headers", rest] : [])];
+}
+// argomenti d'ingresso per ffmpeg: fotogramma all'istante t, oppure la copertina
+async function frameInput(src: string, t: number, cover: boolean, preview: boolean, thumb?: string): Promise<string[]> {
+  const loc = srcOf(src);
+  if (loc) {
+    if (cover) {
+      const r = await new Deno.Command(FFPROBE, { args: ["-v", "error", "-select_streams", "v", "-show_entries", "stream=index:stream_disposition=attached_pic", "-of", "json", loc.path], stdout: "piped", stderr: "null" }).output();
+      // deno-lint-ignore no-explicit-any
+      const pic = ((JSON.parse(new TextDecoder().decode(r.stdout)).streams || []) as any[]).find((x) => x.disposition?.attached_pic);
+      if (!pic) throw new Error("Questo file non ha una copertina.");
+      return ["-i", loc.path, "-map", `0:${pic.index}`];
+    }
+    return [...(t > 0 ? ["-ss", String(t)] : []), "-i", loc.path, "-map", "0:v:0"];
+  }
+  if (cover) {
+    if (!thumb || !/^https?:\/\//.test(thumb)) throw new Error("Questo link non ha una copertina.");
+    return ["-i", thumb];
+  }
+  const s = await streamUrl(src, preview);
+  return [...headerArgs(s.headers), ...(t > 0 ? ["-ss", String(t)] : []), "-i", s.url, "-map", "0:v:0"];
+}
+async function runFrame(j: AnyJob): Promise<boolean> {
+  const cover = j.frameKind === "cover";
+  const ext = j.format === "png" ? "png" : "jpg";
+  let t = Math.max(0, Number(j.frameT) || 0);
+  if (j.duration && t > Number(j.duration)) t = Math.max(0, Number(j.duration) - 0.1);
+  setPhase(j, "frame", null, "process");
+  j.note = cover ? "Prendo la copertina…" : `Prendo il fotogramma a ${t.toFixed(2).replace(".", ",")} s…`;
+  const loc = srcOf(j.url);
+  j._meta = loc ? { title: loc.title } : j._meta || { title: j.title };
+  const dest = await uniquePath(fileName(j, ext, cover ? " (copertina)" : ` (fotogramma ${mmss(t)}${t % 1 ? "." + String(Math.round((t % 1) * 100)).padStart(2, "0") : ""})`));
+  const enc = ext === "png" ? ["-c:v", "png", "-pix_fmt", "rgb24"] : ["-c:v", "mjpeg", "-q:v", "2", "-pix_fmt", "yuvj444p"];
+  const run = async (input: string[]) => runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", ...input, "-frames:v", "1", "-update", "1", ...enc, dest], () => {});
+  let ok = false, err = "";
+  try { [ok, err] = await run(await frameInput(String(j.url), t, cover, false, j.thumb as string | undefined)); }
+  catch (e) { err = String(e instanceof Error ? e.message : e); }
+  // il sito non lascia leggere a pezzi: scarico il video (solo immagine) e prendo il fotogramma dal file
+  if (!ok && !cover && !loc && !j._cancel) {
+    log("fotogramma diretto non riuscito, scarico il video:", err.slice(-300));
+    j.note = "Scarico il video per prendere il fotogramma…";
+    const tmp = join(TMP, `${j.id}-frame.%(ext)s`);
+    let file = "";
+    const [dok, derr] = await runProc(j, YTDLP, ["--no-playlist", "--quiet", "--no-warnings", "-f", "bv*[vcodec!^=av01]/bv*/b", "-o", tmp, "--print", "after_move:%(filepath)s", "--no-simulate", ...cookieArgs(), "--", String(j.url)],
+      (l) => { if (l.trim()) file = l.trim(); });
+    if (dok && file) { (j._tmp ||= []).push(file); [ok, err] = await run([...(t > 0 ? ["-ss", String(t)] : []), "-i", file, "-map", "0:v:0"]); }
+    else err = cleanError(derr);
+  }
+  j.note = null;
+  if (j._cancel) { await rm(dest); return false; }
+  if (!ok || !await exists(dest)) { await rm(dest); return fail(j, /^[A-Z]/.test(err) && err.length < 200 ? err : `Non riesco a prendere ${cover ? "la copertina" : "il fotogramma"}. ${err.trim().split("\n").pop()?.slice(0, 160) || ""}`); }
+  j._files = [dest];
+  return true;
+}
+
 function fail(j: AnyJob, msg: string): false {
   if (!j._cancel) { Object.assign(j, { stage: "error", error: msg, note: null }); log("lavoro", j.id, "fallito:", msg); }
   return false;
@@ -735,8 +960,16 @@ async function runJob(j: AnyJob) {
   j.phases = planPhases(j);
   j._dl = { expected: null, doneParts: 0, lastTotal: 0 };
   Object.assign(j, { error: null, note: null, speed: null, eta: null, downloaded: 0, total: 0 });
-  setPhase(j, "download", null, "download");
+  setPhase(j, j.phases[0].key, null, j.mode === "frame" || j.local ? "process" : "download");
   try {
+    if (j.mode === "frame") {
+      if (!await runFrame(j)) return;
+    } else if (j.local) {
+      const s = srcOf(j.url);
+      if (!s || !await exists(s.path)) { fail(j, "Il file non c'è più: trascinalo di nuovo in Brsket."); return; }
+      j._meta = { title: s.title };
+      if (!await convertLocal(j, s.path)) return;
+    } else {
     // multicanale da YouTube: serve l'analisi con le tracce 5.1 (se è vecchia la rifaccio)
     const c = infoCache.get(j.url as string);
     if ((Number(j.channels) || 2) > 2 && /youtu\.?be/i.test(j.url as string) && (!c || Date.now() - c.at > 20 * 60 * 1000)) {
@@ -788,10 +1021,7 @@ async function runJob(j: AnyJob) {
     } else if (needsTmpPost(j)) {
       const info = await probe(src);
       const ext = fmt in PRO || fmt === "mov" ? "mov" : fmt;
-      const aspect = j.aspect && j.aspect !== "orig" ? ASPECTS[j.aspect as string] : null;
-      const kk = j.res === "2160" ? 2 : 1;
-      j._res = aspect ? `${aspect[0] * kk}x${aspect[1] * kk}` : j.res && j.res !== "orig" ? `${j.res}p` : info.height ? `${Math.min(info.width || info.height, info.height)}p` : "";
-      if (j.fps && j.fps !== "orig") j._res += aspect ? `@${j.fps}` : `${j.fps}`;
+      j._res = resToken(j, info);
       const dest = await uniquePath(fileName(j, ext));
       setPhase(j, "convert", 0, "convert");
       const meta = (j._meta || {}) as Record<string, string>;
@@ -817,6 +1047,7 @@ async function runJob(j: AnyJob) {
       await Deno.rename(src, dest);
       j._files = [dest];
     }
+    }
     if (j.loud && j.loud !== "off") {
       for (const f of j._files || []) if (!await normalizeLoudness(j, f)) return;
     }
@@ -827,7 +1058,7 @@ async function runJob(j: AnyJob) {
       const pr = await new Deno.Command(FFPROBE, { args: ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,avg_frame_rate,channels", "-of", "json", (j._files || [])[0]], stdout: "piped", stderr: "null" }).output();
       // deno-lint-ignore no-explicit-any
       const st = (JSON.parse(new TextDecoder().decode(pr.stdout)).streams || []) as any[];
-      const v = st.find((x) => x.codec_type === "video" && !["mjpeg", "png"].includes(x.codec_name));
+      const v = st.find((x) => x.codec_type === "video" && (j.mode === "frame" || !["mjpeg", "png"].includes(x.codec_name)));
       const a = st.find((x) => x.codec_type === "audio");
       const [fn, fd] = String(v?.avg_frame_rate || "0/1").split("/").map(Number);
       j.out = { w: v?.width || null, h: v?.height || null, fps: fd ? Math.round(fn / fd * 100) / 100 : null, ch: a?.channels || null };
@@ -945,6 +1176,7 @@ async function route(req: Request, remote = false): Promise<Response> {
   if (p === "/api/quit" && m === "POST" && !remote) {
     log("Esci premuto: chiudo");
     for (const j of jobs.values()) { j._cancel = true; stop(j); }
+    await sweepUploads(true).catch(() => {});
     // avviato da launchd: togli il servizio, altrimenti launchd lo riaccenderebbe
     const label = Deno.env.get("SCARICA_LAUNCHD");
     if (label && MAC) setTimeout(() => { try { new Deno.Command("/bin/launchctl", { args: ["remove", label], stdout: "null", stderr: "null" }).spawn(); } catch { /* */ } }, 200);
@@ -978,9 +1210,13 @@ async function route(req: Request, remote = false): Promise<Response> {
       if (typeof b.lan === "boolean") { settings.lan = b.lan; setLan(b.lan); }
       if (typeof b.cookies === "string") settings.cookies = COOKIE_BROWSERS.includes(b.cookies) ? b.cookies : "";
       if (b.newToken) settings.token = String(Math.floor(100000 + Math.random() * 900000));
+      if (Array.isArray(b.presets)) {
+        settings.presets = b.presets.slice(0, 40).filter((x: Preset) => x && typeof x.name === "string" && x.name.trim() && x.opts && typeof x.opts === "object")
+          .map((x: Preset) => ({ name: x.name.trim().slice(0, 40), opts: JSON.parse(JSON.stringify(x.opts).slice(0, 4000)) }));
+      }
       await saveSettings();
     }
-    return json({ schema: settings.schema, notify: settings.notify, lan: settings.lan, clients: settings.clients, cookies: settings.cookies,
+    return json({ schema: settings.schema, notify: settings.notify, lan: settings.lan, clients: settings.clients, cookies: settings.cookies, presets: settings.presets,
       lanUrl: settings.lan && !remote ? lanUrl() : null, lanActive: !!lanServer, today: today() });
   }
   if (p === "/api/playlist" && m === "POST") {
@@ -1086,12 +1322,74 @@ async function route(req: Request, remote = false): Promise<Response> {
       est, audio_bytes: bestAudio, fps: top.fps || 30, in_playlist: inPlaylist, ratio: top.width && top.height ? top.width / top.height : 16 / 9,
     });
   }
+  // file dal computer: percorsi veri (dall'app per Mac: trascinati, scelti o "Apri con") …
+  if (p === "/api/local" && m === "POST" && !remote) {
+    if (!(await toolsReady()).ff) return json({ error: "Brsket si sta ancora preparando: aspetta qualche secondo." }, 400);
+    const paths = ((await body(req)).paths || []) as string[];
+    const items = [], skipped: string[] = [];
+    for (const raw of paths.slice(0, 200)) {
+      const path = String(raw).replace(/^file:\/\//, "");
+      let st: Deno.FileInfo | null = null;
+      try { st = await Deno.stat(path); } catch { /* */ }
+      const name = path.split(/[\\/]/).pop() || "file";
+      if (!st?.isFile) { skipped.push(name); continue; }
+      const id = addSource(path, name, false);
+      const info = await localInfo(id);
+      if (info) items.push(info); else { sources.delete(id); skipped.push(name); }
+    }
+    log(`file dal computer: ${items.length} pronti${skipped.length ? `, scartati ${skipped.join(", ")}` : ""}`);
+    if (!items.length) return json({ error: skipped.length ? `Brsket non riesce a leggere ${skipped.length > 1 ? "questi file" : `«${skipped[0]}»`}: servono file video o audio.` : "Nessun file." }, 400);
+    return json({ items, skipped });
+  }
+  // … oppure caricati dalla pagina (browser o telefono): copia temporanea, cancellata a lavoro finito
+  if (p === "/api/upload" && (m === "PUT" || m === "POST")) {
+    if (!(await toolsReady()).ff) return json({ error: "Brsket si sta ancora preparando: aspetta qualche secondo." }, 400);
+    const name = safeName(url.searchParams.get("name") || "file") || "file";
+    if (!req.body) return json({ error: "File vuoto." }, 400);
+    const ext = (name.match(/\.[A-Za-z0-9]{1,5}$/) || [""])[0];
+    const path = join(TMP, `up-${crypto.randomUUID().slice(0, 8)}${ext}`);
+    try { await Deno.writeFile(path, req.body); } catch (e) { await rm(path); return json({ error: `Caricamento non riuscito: ${String(e).slice(0, 120)}` }, 500); }
+    const id = addSource(path, name, true);
+    const info = await localInfo(id);
+    if (!info) { await rm(path); sources.delete(id); return json({ error: `Brsket non riesce a leggere «${name}»: servono file video o audio.` }, 400); }
+    log("file caricato dalla pagina:", name, (await Deno.stat(path)).size, "byte");
+    return json({ items: [info], skipped: [] });
+  }
+  // anteprima di un fotogramma (per scegliere l'istante giusto)
+  if (p === "/api/frame" && m === "GET") {
+    const src = url.searchParams.get("src") || "";
+    const t = Math.max(0, Number(url.searchParams.get("t")) || 0);
+    const w = Math.min(1280, Math.max(120, Number(url.searchParams.get("w")) || 640));
+    const cover = url.searchParams.get("cover") === "1";
+    if (!srcOf(src) && !/^https?:\/\//i.test(src)) return json({ error: "Sorgente non valida." }, 400);
+    try {
+      const input = await frameInput(src, t, cover, true);
+      const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 25000);
+      const r = await new Deno.Command(FFMPEG, { args: ["-hide_banner", "-loglevel", "error", ...input, "-frames:v", "1", "-vf", `scale=${w}:-2:flags=bicubic`,
+        "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "4", "pipe:1"], stdout: "piped", stderr: "piped", signal: ctl.signal }).output();
+      clearTimeout(tm);
+      if (!r.success || !r.stdout.length) return json({ error: "Anteprima non disponibile." }, 422);
+      return new Response(r.stdout, { headers: { "content-type": "image/jpeg", "cache-control": "max-age=600" } });
+    } catch (e) { return json({ error: String(e instanceof Error ? e.message : e).slice(0, 200) }, 422); }
+  }
   if (p === "/api/download" && m === "POST") {
     const b = await body(req);
-    const u = String(b.url || "").trim(), mode = b.mode === "audio" ? "audio" : "video", fmt = String(b.format || "mp4");
-    if (!/^https?:\/\//i.test(u)) return json({ error: "Link non valido: deve iniziare con http:// o https://" }, 400);
-    if (!(await toolsReady()).yt || !(await toolsReady()).ff) return json({ error: "Brsket si sta ancora preparando: aspetta qualche secondo." }, 400);
-    if ((mode === "video" && !VIDEO.has(fmt)) || (mode === "audio" && !AUDIO.has(fmt))) return json({ error: "Formato non valido." }, 400);
+    const u = String(b.url || "").trim(), mode = b.mode === "audio" ? "audio" : b.mode === "frame" ? "frame" : "video", fmt = String(b.format || "mp4");
+    const local = !!srcOf(u);
+    if (local) srcOf(u)!.at = Date.now();
+    if (/^local:/.test(u) && !local) return json({ error: "Il file non c'è più: trascinalo di nuovo in Brsket." }, 400);
+    if (!local && !/^https?:\/\//i.test(u)) return json({ error: "Link non valido: deve iniziare con http:// o https://" }, 400);
+    const tr = await toolsReady();
+    if (!tr.ff || (!local && !tr.yt)) return json({ error: "Brsket si sta ancora preparando: aspetta qualche secondo." }, 400);
+    if ((mode === "video" && !VIDEO.has(fmt)) || (mode === "audio" && !AUDIO.has(fmt)) || (mode === "frame" && !FRAME.has(fmt))) return json({ error: "Formato non valido." }, 400);
+    // misura su misura (es. ledwall 1152x576): numeri pari, multipli di 4 per HAP
+    let resW = 0, resH = 0;
+    if (mode === "video" && b.res === "custom") {
+      resW = Math.round(Number(b.resW)); resH = Math.round(Number(b.resH));
+      if (!(resW >= 16 && resW <= 8192 && resH >= 16 && resH <= 8192)) return json({ error: "Misura non valida: scrivi larghezza e altezza tra 16 e 8192 pixel." }, 400);
+      const q = fmt === "hap" || fmt === "hapq" ? 4 : 2;
+      resW = Math.round(resW / q) * q; resH = Math.round(resH / q) * q;
+    }
     if (fmt in PRO && !proAvailable.includes(fmt)) return json({ error: `${FORMAT_LABEL[fmt]} non è disponibile in questo FFmpeg.` }, 400);
     const start = toSec(b.start), end = toSec(b.end);
     if ((b.start && start == null) || (b.end && end == null)) return json({ error: "Orario del taglio non valido: usa ad esempio 1:20." }, 400);
@@ -1110,9 +1408,11 @@ async function route(req: Request, remote = false): Promise<Response> {
       thumbnail: b.thumbnail !== false, title: b.title || u, thumb: b.thumb || null, duration: b.duration || null,
       start: start && start > 0 ? start : (end != null ? 0 : null), end,
       aspect, fit: b.fit === "blur" ? "blur" : "crop", separate, stems, client,
-      loud: LOUD.has(String(b.loud)) && separate === "none" ? String(b.loud) : "off",
+      loud: LOUD.has(String(b.loud)) && separate === "none" && mode !== "frame" ? String(b.loud) : "off",
       fps: mode === "video" && FPS.has(String(b.fps)) ? String(b.fps) : "orig",
-      res: mode === "video" && String(b.res) in RES ? String(b.res) : "orig",
+      res: mode === "video" && (String(b.res) in RES || resW) ? (resW ? "custom" : String(b.res)) : "orig",
+      resW: resW || null, resH: resH || null, resFit: b.resFit === "crop" ? "crop" : "pad", local,
+      frameKind: mode === "frame" && b.frameKind === "cover" ? "cover" : "frame", frameT: mode === "frame" ? Math.max(0, Number(b.frameT) || 0) : null,
       channels: Number.isInteger(Number(b.channels)) && Number(b.channels) >= 1 && Number(b.channels) <= 24 && separate === "none" ? Number(b.channels) : 2,
       stage: "waiting", percent: 0, overall: 0, created_at: Date.now() / 1000 + Math.random() / 1e4,
     };

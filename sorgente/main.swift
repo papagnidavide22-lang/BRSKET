@@ -2,8 +2,19 @@
 import Cocoa
 import WebKit
 import UserNotifications
+import UniformTypeIdentifiers
 
 let URL_BASE = "http://127.0.0.1:8765"
+
+// finestra web che accetta i file trascinati dal Finder: passa all'app il percorso vero (niente copie)
+final class DropWebView: WKWebView {
+    var onFiles: (([URL]) -> Void)?
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        if !urls.isEmpty { onFiles?(urls); return true }
+        return super.performDragOperation(sender)   // link trascinati: li gestisce la pagina
+    }
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate {
     var window: NSWindow!
@@ -13,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     var downCount = 0
     var quitting = false
     var seenDone: Set<String>? = nil   // download già finiti (per avvisare solo dei nuovi)
+    var pendingFiles: [String] = []    // file aperti con Brsket prima che la pagina fosse pronta
     let dataDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Brsket")
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -40,7 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         cfg.userContentController.add(self, name: "brsket")
         cfg.websiteDataStore = .default()
         cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        web = WKWebView(frame: .zero, configuration: cfg)
+        let dw = DropWebView(frame: .zero, configuration: cfg)
+        dw.onFiles = { [weak self] urls in self?.openFiles(urls.map { $0.path }) }
+        web = dw
         web.navigationDelegate = self
         web.uiDelegate = self
         web.allowsBackForwardNavigationGestures = false
@@ -153,24 +167,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                     let files = j["files"] as? [[String: Any]] ?? []
                     let name = files.first?["name"] as? String ?? (j["title"] as? String ?? "")
                     let body = files.count > 1 ? "\(files.count) file: \(name)" : name
-                    self.notifyDone(id: id, body: body)
+                    let title = (j["mode"] as? String) == "frame" ? "Immagine pronta" : (j["local"] as? Bool) == true ? "Conversione completata" : "Download completato"
+                    self.notifyDone(id: id, body: body, title: title)
                 }
             }
         }.resume()
     }
 
-    func notifyDone(id: String, body: String) {
+    func notifyDone(id: String, body: String, title: String) {
         // rispetta l'interruttore "Notifica quando un download è pronto" nelle Impostazioni
         URLSession.shared.dataTask(with: URL(string: URL_BASE + "/api/settings")!) { data, _, _ in
             let st = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             if let on = st?["notify"] as? Bool, !on { return }
-            DispatchQueue.main.async { self.postNotification(id: id, body: body) }
+            DispatchQueue.main.async { self.postNotification(id: id, body: body, title: title) }
         }.resume()
     }
 
-    func postNotification(id: String, body: String) {
+    func postNotification(id: String, body: String, title: String = "Download completato") {
         let c = UNMutableNotificationContent()
-        c.title = "Download completato"
+        c.title = title
         c.body = body + "\nClicca per aprire la cartella"
         c.sound = .default
         c.userInfo = ["id": id]
@@ -199,8 +214,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         case "notify":
             break   // le notifiche le manda l'app da sola (anche a finestra chiusa)
+        case "pickFiles":
+            pickFiles()
         default: break
         }
+    }
+
+    // ---------- file dal computer ----------
+    func pickFiles() {
+        let p = NSOpenPanel()
+        p.allowsMultipleSelection = true; p.canChooseDirectories = false; p.canChooseFiles = true
+        p.allowedContentTypes = [.movie, .audio, .audiovisualContent, .video]
+        p.message = "Scegli uno o più file video o audio da convertire"
+        p.prompt = "Converti"
+        p.beginSheetModal(for: window) { [weak self] r in
+            if r == .OK { self?.openFiles(p.urls.map { $0.path }) }
+        }
+    }
+    // consegna i percorsi alla pagina; se non è ancora pronta li tiene da parte
+    func openFiles(_ paths: [String]) {
+        guard !paths.isEmpty else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        guard let data = try? JSONSerialization.data(withJSONObject: paths), let arr = String(data: data, encoding: .utf8) else { return }
+        guard web.url?.absoluteString.hasPrefix(URL_BASE) == true, !web.isLoading else { pendingFiles += paths; return }
+        web.evaluateJavaScript("window.__brsketFiles ? (window.__brsketFiles(\(arr)), true) : false") { [weak self] r, _ in
+            if (r as? Bool) != true { self?.pendingFiles += paths }
+        }
+    }
+    // "Apri con Brsket" e file trascinati sull'icona nel Dock
+    func application(_ a: NSApplication, open urls: [URL]) {
+        openFiles(urls.filter { $0.isFileURL }.map { $0.path })
+    }
+    func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
+        guard w.url?.absoluteString.hasPrefix(URL_BASE) == true, !pendingFiles.isEmpty else { return }
+        let p = pendingFiles; pendingFiles = []
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.openFiles(p) }
+    }
+    // <input type=file> nella pagina (es. pagina aperta nel browser): pannello di macOS
+    func webView(_ w: WKWebView, runOpenPanelWith params: WKOpenPanelParameters, initiatedByFrame f: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let p = NSOpenPanel()
+        p.allowsMultipleSelection = params.allowsMultipleSelection; p.canChooseDirectories = false
+        p.beginSheetModal(for: window) { r in completionHandler(r == .OK ? p.urls : nil) }
     }
 
     // piccolo registro per capire se le notifiche partono

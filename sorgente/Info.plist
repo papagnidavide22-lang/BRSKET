@@ -7,8 +7,8 @@
   <key>CFBundleExecutable</key><string>Brsket</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>6.8</string>
-  <key>CFBundleShortVersionString</key><string>6.8</string>
+  <key>CFBundleVersion</key><string>6.9</string>
+  <key>CFBundleShortVersionString</key><string>6.9</string>
   <key>CFBundleDevelopmentRegion</key><string>it</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
@@ -16,5 +16,11 @@
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>NSHumanReadableCopyright</key><string>Brsket — scarica video e audio sul tuo Mac.</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>CFBundleDocumentTypes</key><array>
+    <dict><key>CFBundleTypeName</key><string>Video</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>public.movie</string><string>public.video</string><string>public.audiovisual-content</string></array></dict>
+    <dict><key>CFBundleTypeName</key><string>Audio</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>public.audio</string></array></dict>
+  </array>
   <key>BrsketUpdateRepo</key><string>papagnidavide22-lang/brsket</string>
 </dict></plist>

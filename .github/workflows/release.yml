@@ -21,6 +21,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then echo "La release $TAG esiste già"; exit 0; fi
           cp aggiornamenti/Brsket.dmg "Brsket-$VER.dmg"
           cp aggiornamenti/Brsket.zip "Brsket.zip"
+          cp aggiornamenti/Brsket.dmg "Brsket.dmg"   # nome fisso: il link releases/latest/download/Brsket.dmg porta sempre all'ultima
           NOTE=$(awk '/^## Novità della '"$VER"'/{f=1;next} /^## /{f=0} f' README.md)
           printf '%s\n\nPer installare: scarica Brsket-%s.dmg, aprilo e trascina Brsket in Applicazioni. La prima volta: clic destro su Brsket > Apri.\nChi ha già Brsket riceve questa versione da solo.\n' "$NOTE" "$VER" > note.md
-          gh release create "$TAG" "Brsket-$VER.dmg" "Brsket.zip" --title "Brsket $VER" --notes-file note.md --latest
+          gh release create "$TAG" "Brsket-$VER.dmg" "Brsket.dmg" "Brsket.zip" --title "Brsket $VER" --notes-file note.md --latest
