@@ -8,4 +8,10 @@
 - `build.command`: compila l'app e crea il pacchetto per gli aggiornamenti; `dmg.command` crea il DMG.
 - `collega-apple.command`: collega l'account sviluppatore Apple per firma e notarizzazione.
 
-Per una nuova versione: aggiorna `CFBundleShortVersionString` in `Info.plist`, apri `build.command` su un Mac con gli strumenti da riga di comando di Xcode, poi copia `release/Brsket.zip` e il DMG in `aggiornamenti/` e aggiorna `aggiornamenti/latest.json`.
+## Ogni nuova versione (regola fissa)
+
+1. Alza `CFBundleShortVersionString` in `Info.plist` e scrivi la sezione "Novità X" nel README.
+2. Compila con `build.command` sul Mac.
+3. Copia `release/Brsket.zip` e il DMG in `aggiornamenti/`, porta `aggiornamenti/latest.json` alla nuova versione e fai il push su `main`.
+4. Il push crea da solo la release `vX` su GitHub (DMG + zip, note dal README) tramite `.github/workflows/release.yml`: controlla che compaia in Releases.
+5. Tutte le copie di Brsket dalla 6.2 in poi trovano l'aggiornamento da sole (all'avvio e ogni 6 ore) e lo installano alla chiusura o con "Riavvia e aggiorna".
