@@ -542,12 +542,17 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
   const extra = [!forced && !aspect && xf?.maxW ? `scale='min(iw,${xf.maxW})':-2:flags=lanczos` : "", fpsF,
     mult ? `scale=trunc(iw/${mult})*${mult}:trunc(ih/${mult})*${mult}` : "", xf?.vf || ""].filter(Boolean).join(",");
   const noAudio = xf?.a === null;
+  // porzione scelta trascinando il riquadro nell'anteprima (sinistra, alto, larghezza, altezza in frazioni del video)
+  const cp = j.crop as { x: number; y: number; w: number; h: number } | null;
+  const cropF = cp ? `crop=trunc(iw*${cp.w}/2)*2:trunc(ih*${cp.h}/2)*2:trunc(iw*${cp.x}):trunc(ih*${cp.y})` : "";
   const args: string[] = [];
   if (forced) {
     const [W, H] = forced;
     // risoluzione esatta per lo show: adatta senza deformare, bande nere se le proporzioni sono diverse
     // (oppure, su misura con "Ritaglio", riempie tutta la misura tagliando i bordi)
-    let chain = cr && j.resFit === "crop"
+    let chain = cr && j.resFit === "crop" && cropF
+      ? `[0:v]${cropF},scale=${W}:${H}:flags=lanczos,setsar=1`
+      : cr && j.resFit === "crop"
       ? `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},setsar=1`
       : `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
     if (extra) chain += `,${extra}`;
@@ -557,6 +562,7 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
     let chain = j.fit === "blur"
       ? `[0:v]split=2[bg][fg];[bg]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},gblur=sigma=40,eq=brightness=-0.06[b];` +
         `[fg]scale=${W}:${H}:force_original_aspect_ratio=decrease[f];[b][f]overlay=(W-w)/2:(H-h)/2,setsar=1`
+      : cropF ? `[0:v]${cropF},scale=${W}:${H}:flags=lanczos,setsar=1`
       : `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`;
     if (extra) chain += `,${extra}`;
     args.push("-filter_complex", `${chain}[v]`, "-map", "[v]", ...(noAudio ? [] : ["-map", "0:a?"]));
@@ -1109,6 +1115,146 @@ async function runSelftest() {
   finally { await rm(dir); selftest.running = false; }
 }
 
+
+// ---------- scheda tecnica: tutto quello che si può sapere di un file o di un link ----------
+type Row = [string, string];
+type Section = { title: string; rows?: Row[]; table?: { cols: string[]; rows: string[][] }; text?: string; list?: string[] };
+const human = {
+  size: (b: number) => { if (!b) return ""; const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (b >= 1024 && i < 4) { b /= 1024; i++; } return `${b.toFixed(i > 1 ? 2 : 0).replace(".", ",")} ${u[i]}`; },
+  dur: (s: number) => { if (!s && s !== 0) return ""; const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return `${h ? h + ":" + String(m).padStart(2, "0") : m}:${x.toFixed(x % 1 ? 3 : 0).padStart(x % 1 ? 6 : 2, "0").replace(".", ",")}`; },
+  br: (b: number) => !b ? "" : b >= 1e6 ? `${(b / 1e6).toFixed(2).replace(".", ",")} Mbit/s` : `${Math.round(b / 1000)} kbit/s`,
+  fps: (f: string) => { const [n, d] = String(f || "0/1").split("/").map(Number); if (!d || !n) return ""; const v = n / d; return `${Number.isInteger(v) ? v : v.toFixed(3).replace(".", ",")} fps${d !== 1 ? ` (${n}/${d})` : ""}`; },
+  num: (n: number) => n == null ? "" : Number(n).toLocaleString("it-IT"),
+  date: (d: string) => { const m = String(d || "").match(/^(\d{4})-?(\d{2})-?(\d{2})(?:[T ](\d{2}):(\d{2}))?/); return m ? `${m[3]}/${m[2]}/${m[1]}${m[4] ? ` ${m[4]}:${m[5]}` : ""}` : String(d || ""); },
+};
+const CH_NAME: Record<number, string> = { 1: "Mono", 2: "Stereo", 3: "2.1", 4: "4.0", 5: "5.0", 6: "5.1", 7: "6.1", 8: "7.1", 10: "7.1.2", 12: "7.1.4", 16: "9.1.6", 24: "22.2" };
+const rowsOf = (pairs: [string, unknown][]): Row[] => pairs.filter(([, v]) => v !== undefined && v !== null && v !== "" && v !== "N/A" && v !== "unknown").map(([k, v]) => [k, String(v)]);
+function pixInfo(p: string) {
+  const bits = (p.match(/p(\d{2})(le|be)?$/) || [])[1] || (/^(rgb48|bgr48|rgba64|gray16)/.test(p) ? "16" : /f32/.test(p) ? "32 (float)" : p ? "8" : "");
+  const sub = /444|gbr|rgb|bgr|argb|abgr/.test(p) ? "4:4:4" : /422/.test(p) ? "4:2:2" : /420|nv12|p010/.test(p) ? "4:2:0" : /411/.test(p) ? "4:1:1" : "";
+  const alpha = /a(444|422|420)|rgba|bgra|argb|abgr|yuva|gbrap|ya/.test(p);
+  return { bits, sub, alpha };
+}
+async function fileDetails(path: string, name: string, temp = false, pre: string[] = []): Promise<Section[]> {
+  const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 20000);
+  const r = await new Deno.Command(FFPROBE, { args: ["-v", "error", ...pre, "-show_format", "-show_streams", "-show_chapters", "-of", "json", path], stdout: "piped", stderr: "null", signal: ctl.signal }).output();
+  clearTimeout(tm);
+  // deno-lint-ignore no-explicit-any
+  const d: any = JSON.parse(new TextDecoder().decode(r.stdout) || "{}");
+  const f = d.format || {}, tags = f.tags || {};
+  const st = await Deno.stat(path).catch(() => null);
+  const T = (k: string) => Object.entries(tags).find(([x]) => x.toLowerCase() === k.toLowerCase())?.[1] as string | undefined;
+  const out: Section[] = [];
+  out.push({ title: "File", rows: rowsOf([["Nome", name], ["Cartella", temp || pre.length ? "" : path.split(/[\\/]/).slice(0, -1).join("/")], ["Contenitore", `${f.format_long_name || f.format_name}${f.format_name ? ` (${f.format_name})` : ""}`],
+    ["Dimensione", human.size(Number(f.size) || st?.size || 0)], ["Durata", human.dur(Number(f.duration))], ["Bitrate totale", human.br(Number(f.bit_rate))],
+    ["Tracce", `${d.streams?.length || 0}`], ["Creato", human.date(T("creation_time") || T("com.apple.quicktime.creationdate") || "")],
+    ["Modificato", st?.mtime ? human.date(st.mtime.toISOString()) : ""], ["Marca", T("com.apple.quicktime.make") || T("make")], ["Modello", T("com.apple.quicktime.model") || T("model")],
+    ["Software", T("com.apple.quicktime.software") || T("software")], ["Codificato con", T("encoder") || T("encoded_by")],
+    ["Posizione", T("com.apple.quicktime.location.ISO6709") || T("location")], ["Marca del formato", T("major_brand")], ["Titolo", T("title")], ["Artista", T("artist")],
+    ["Album", T("album")], ["Anno", T("date") || T("year")], ["Genere", T("genre")], ["Commento", T("comment") || T("description")], ["Copyright", T("copyright")]]) });
+  // deno-lint-ignore no-explicit-any
+  const streams = (d.streams || []) as any[];
+  let vi = 0, ai = 0, si = 0;
+  for (const s of streams) {
+    const t = s.tags || {}, disp = s.disposition || {};
+    const lang = t.language && t.language !== "und" ? t.language : "";
+    if (s.codec_type === "video" && disp.attached_pic) {
+      out.push({ title: "Copertina incorporata", rows: rowsOf([["Formato", s.codec_long_name || s.codec_name], ["Misura", `${s.width} × ${s.height}`]]) });
+      continue;
+    }
+    if (s.codec_type === "video") {
+      const px = pixInfo(String(s.pix_fmt || ""));
+      const sideRot = (s.side_data_list || []).find((x: { rotation?: number }) => x.rotation != null)?.rotation;
+      const hdr = s.color_transfer === "smpte2084" ? "HDR10 / PQ" : s.color_transfer === "arib-std-b67" ? "HLG" : (s.side_data_list || []).some((x: { side_data_type?: string }) => /DOVI/i.test(x.side_data_type || "")) ? "Dolby Vision" : "SDR";
+      out.push({ title: `Video${streams.filter((x) => x.codec_type === "video" && !x.disposition?.attached_pic).length > 1 ? ` ${++vi}` : ""}`, rows: rowsOf([
+        ["Codec", `${s.codec_long_name || s.codec_name}`], ["Profilo", s.profile], ["Livello", s.level > 0 ? (s.codec_name === "h264" || s.codec_name === "hevc" ? (s.level / (s.codec_name === "hevc" ? 30 : 10)).toFixed(1).replace(".", ",") : s.level) : ""],
+        ["Codice (FourCC)", s.codec_tag_string && !/^\[/.test(s.codec_tag_string) ? s.codec_tag_string : ""], ["Risoluzione", s.width ? `${s.width} × ${s.height}` : ""],
+        ["Proporzioni", s.display_aspect_ratio && s.display_aspect_ratio !== "0:1" ? s.display_aspect_ratio : ""], ["Pixel (SAR)", s.sample_aspect_ratio && s.sample_aspect_ratio !== "1:1" && s.sample_aspect_ratio !== "0:1" ? s.sample_aspect_ratio : s.width ? "quadrati (1:1)" : ""],
+        ["Frame rate", human.fps(s.avg_frame_rate) || human.fps(s.r_frame_rate)], ["Frame rate variabile", s.avg_frame_rate && s.r_frame_rate && s.avg_frame_rate !== s.r_frame_rate ? "sì (VFR)" : ""],
+        ["Fotogrammi", s.nb_frames ? human.num(Number(s.nb_frames)) : ""], ["Durata", human.dur(Number(s.duration))], ["Bitrate", human.br(Number(s.bit_rate))],
+        ["Formato pixel", s.pix_fmt], ["Profondità colore", px.bits ? `${s.bits_per_raw_sample || px.bits} bit` : ""], ["Campionamento colore", px.sub], ["Trasparenza (alfa)", px.alpha ? "sì" : ""],
+        ["Gamma dinamica", hdr], ["Spazio colore", s.color_space], ["Primari", s.color_primaries], ["Trasferimento", s.color_transfer], ["Livelli", s.color_range === "pc" ? "pieni (0-255)" : s.color_range === "tv" ? "limitati (16-235)" : ""],
+        ["Scansione", s.field_order === "progressive" ? "progressiva" : s.field_order ? `interlacciata (${s.field_order === "tt" || s.field_order === "tb" ? "campo superiore primo" : "campo inferiore primo"})` : ""],
+        ["Rotazione", sideRot ? `${sideRot}°` : t.rotate ? `${t.rotate}°` : ""], ["B-frame", s.has_b_frames != null ? (s.has_b_frames ? `sì (${s.has_b_frames})` : "no") : ""],
+        ["Timecode", t.timecode], ["Lingua", lang], ["Nome traccia", t.title || t.handler_name], ["Codificatore", t.encoder]]) });
+    } else if (s.codec_type === "audio") {
+      out.push({ title: `Audio${streams.filter((x) => x.codec_type === "audio").length > 1 ? ` ${++ai}` : ""}`, rows: rowsOf([
+        ["Codec", s.codec_long_name || s.codec_name], ["Profilo", s.profile], ["Canali", `${s.channels}${CH_NAME[s.channels] ? ` (${CH_NAME[s.channels]})` : ""}`], ["Disposizione", s.channel_layout],
+        ["Frequenza", s.sample_rate ? `${(Number(s.sample_rate) / 1000).toString().replace(".", ",")} kHz` : ""], ["Campioni", s.sample_fmt], ["Bit", s.bits_per_raw_sample || s.bits_per_sample || ""],
+        ["Bitrate", human.br(Number(s.bit_rate))], ["Durata", human.dur(Number(s.duration))], ["Lingua", lang], ["Nome traccia", t.title || t.handler_name], ["Predefinita", disp.default ? "sì" : ""]]) });
+    } else if (s.codec_type === "subtitle") {
+      out.push({ title: `Sottotitoli${streams.filter((x) => x.codec_type === "subtitle").length > 1 ? ` ${++si}` : ""}`, rows: rowsOf([["Formato", s.codec_long_name || s.codec_name], ["Lingua", lang], ["Nome", t.title], ["Forzati", disp.forced ? "sì" : ""]]) });
+    } else if (s.codec_type === "data" || s.codec_type === "attachment") {
+      out.push({ title: s.codec_type === "data" ? "Traccia dati" : "Allegato", rows: rowsOf([["Tipo", s.codec_long_name || s.codec_name || s.codec_tag_string], ["Nome", t.handler_name || t.filename], ["Timecode", t.timecode]]) });
+    }
+  }
+  // deno-lint-ignore no-explicit-any
+  const ch = (d.chapters || []) as any[];
+  if (ch.length) out.push({ title: `Capitoli (${ch.length})`, list: ch.map((c) => `${human.dur(Math.floor(Number(c.start_time)))}  ${c.tags?.title || ""}`) });
+  const shown = new Set(["creation_time", "encoder", "major_brand", "title", "artist", "album", "date", "genre", "comment", "copyright", "description"]);
+  const rest = Object.entries(tags).filter(([k]) => !shown.has(k.toLowerCase()) && !/com\.apple\.quicktime\.(make|model|software|location|creationdate)/.test(k));
+  if (rest.length) out.push({ title: "Altri metadati", rows: rest.map(([k, v]) => [k, String(v)] as Row) });
+  return out;
+}
+// deno-lint-ignore no-explicit-any
+function linkDetails(i: any): Section[] {
+  const out: Section[] = [];
+  const up = i.upload_date || (i.timestamp ? new Date(i.timestamp * 1000).toISOString() : "");
+  out.push({ title: "Video online", rows: rowsOf([["Titolo", i.title], ["Canale", i.channel || i.uploader], ["Iscritti", i.channel_follower_count ? human.num(i.channel_follower_count) : ""],
+    ["Pubblicato", up ? human.date(up) : ""], ["Durata", human.dur(Number(i.duration))], ["Visualizzazioni", i.view_count != null ? human.num(i.view_count) : ""],
+    ["Mi piace", i.like_count != null ? human.num(i.like_count) : ""], ["Commenti", i.comment_count != null ? human.num(i.comment_count) : ""],
+    ["Categoria", (i.categories || []).join(", ")], ["Lingua", i.language], ["Età minima", i.age_limit ? `${i.age_limit} anni` : ""],
+    ["Stato", i.live_status === "is_live" ? "in diretta" : i.live_status === "was_live" ? "era una diretta" : i.live_status === "is_upcoming" ? "in arrivo" : ""],
+    ["Disponibilità", i.availability === "public" ? "pubblico" : i.availability === "unlisted" ? "non in elenco" : i.availability], ["Licenza", i.license],
+    ["Sito", i.extractor_key], ["ID", i.id], ["Link", i.webpage_url || i.original_url], ["Canale (link)", i.channel_url || i.uploader_url],
+    ["Formato migliore", i.format ? String(i.format).replace(/\s*-\s*/g, " · ") : ""], ["Risoluzione massima", i.width && i.height ? `${i.width} × ${i.height}` : ""],
+    ["Frame rate", i.fps ? `${i.fps} fps` : ""], ["Gamma dinamica", i.dynamic_range], ["Proporzioni", i.aspect_ratio ? String(i.aspect_ratio).replace(".", ",") : ""]]) });
+  if (i.tags?.length) out.push({ title: `Tag (${i.tags.length})`, text: i.tags.join(", ") });
+  if (i.description) out.push({ title: "Descrizione", text: String(i.description).slice(0, 6000) });
+  // deno-lint-ignore no-explicit-any
+  const ch = (i.chapters || []) as any[];
+  if (ch.length) out.push({ title: `Capitoli (${ch.length})`, list: ch.map((c) => `${human.dur(Math.floor(c.start_time))}  ${c.title || ""}`) });
+  // deno-lint-ignore no-explicit-any
+  const fm = ((i.formats || []) as any[]).filter((f) => f.format_id && !/storyboard|mhtml/i.test(`${f.format_note} ${f.ext}`));
+  const isV = (f: { vcodec?: string }) => f.vcodec && f.vcodec !== "none", isA = (f: { acodec?: string }) => f.acodec && f.acodec !== "none";
+  const cc = (c: string) => String(c || "").replace(/^avc1\..*/, "H.264").replace(/^(hev1|hvc1)\..*/, "HEVC").replace(/^vp0?9.*/, "VP9").replace(/^av01\..*/, "AV1").replace(/^mp4a\..*/, "AAC").replace(/^opus$/, "Opus").replace(/^ac-3$/, "AC-3").replace(/^ec-3$/, "E-AC-3");
+  const sz = (f: { filesize?: number; filesize_approx?: number }) => human.size(f.filesize || f.filesize_approx || 0);
+  const vids = fm.filter(isV).sort((a, b) => (b.height || 0) - (a.height || 0) || (b.tbr || 0) - (a.tbr || 0));
+  if (vids.length) out.push({ title: `Qualità video disponibili (${vids.length})`, table: { cols: ["Risoluzione", "fps", "Codec", "Gamma", "Bitrate", "Peso", "Audio", "ID"],
+    rows: vids.map((f) => [f.width && f.height ? `${f.width}×${f.height}` : f.resolution || f.format_note || "", f.fps ? String(f.fps) : "", cc(f.vcodec), f.dynamic_range || "",
+      f.vbr || f.tbr ? `${Math.round(f.vbr || f.tbr)} kbit/s` : "", sz(f), isA(f) ? cc(f.acodec) : "separato", String(f.format_id)]) } });
+  const auds = fm.filter((f) => isA(f) && !isV(f)).sort((a, b) => (b.audio_channels || 0) - (a.audio_channels || 0) || (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
+  if (auds.length) out.push({ title: `Tracce audio disponibili (${auds.length})`, table: { cols: ["Codec", "Canali", "Frequenza", "Bitrate", "Lingua", "Peso", "ID"],
+    rows: auds.map((f) => [cc(f.acodec), f.audio_channels ? `${f.audio_channels}${CH_NAME[f.audio_channels] ? ` (${CH_NAME[f.audio_channels]})` : ""}` : "", f.asr ? `${f.asr / 1000} kHz`.replace(".", ",") : "",
+      f.abr || f.tbr ? `${Math.round(f.abr || f.tbr)} kbit/s` : "", f.language || "", sz(f), String(f.format_id)]) } });
+  const subs = Object.keys(i.subtitles || {}).filter((k) => k !== "live_chat"), auto = Object.keys(i.automatic_captions || {});
+  if (subs.length || auto.length) out.push({ title: "Sottotitoli", rows: rowsOf([["Scritti dall'autore", subs.join(", ") || "nessuno"], ["Automatici", auto.length ? `${auto.length} lingue${auto.includes("it") ? " (italiano compreso)" : ""}` : "nessuno"]]) });
+  // deno-lint-ignore no-explicit-any
+  const th = ((i.thumbnails || []) as any[]).filter((t) => t.width).sort((a, b) => b.width - a.width)[0];
+  if (th || i.thumbnail) out.push({ title: "Copertina", rows: rowsOf([["Misura", th ? `${th.width} × ${th.height}` : ""], ["Link", th?.url || i.thumbnail]]) });
+  return out;
+}
+async function measureLoudness(path: string): Promise<Row[]> {
+  const r = await new Deno.Command(FFMPEG, { args: ["-hide_banner", "-nostats", "-i", path, "-map", "0:a:0", "-af", "ebur128=peak=true", "-f", "null", "-"], stdout: "null", stderr: "piped" }).output();
+  const e = new TextDecoder().decode(r.stderr);
+  const sum = e.slice(e.lastIndexOf("Summary:"));
+  const g = (re: RegExp) => (sum.match(re) || [])[1];
+  const I = g(/I:\s+(-?[\d.]+) LUFS/), LRA = g(/LRA:\s+(-?[\d.]+) LU/), TP = g(/Peak:\s+(-?[\d.]+) dBFS/);
+  return rowsOf([["Volume integrato", I ? `${I.replace(".", ",")} LUFS` : "non misurabile"], ["Dinamica (LRA)", LRA ? `${LRA.replace(".", ",")} LU` : ""], ["Picco vero", TP ? `${TP.replace(".", ",")} dBTP` : ""],
+    ["Per i social (−14)", I ? (Math.abs(Number(I) + 14) < 1 ? "già a posto" : `${Number(I) > -14 ? "più forte" : "più basso"} di ${Math.abs(Number(I) + 14).toFixed(1).replace(".", ",")} LU`) : ""],
+    ["Per la tv (−23)", I ? (Math.abs(Number(I) + 23) < 1 ? "già a posto" : `${Number(I) > -23 ? "più forte" : "più basso"} di ${Math.abs(Number(I) + 23).toFixed(1).replace(".", ",")} LU`) : ""]]);
+}
+
+// riquadro di ritaglio inviato dalla pagina: valido solo se sta dentro al video
+function cropOf(c: unknown): { x: number; y: number; w: number; h: number } | null {
+  if (!c || typeof c !== "object") return null;
+  const o = c as Record<string, unknown>;
+  const [x, y, w, h] = ["x", "y", "w", "h"].map((k) => Number(o[k]));
+  if (![x, y, w, h].every(Number.isFinite) || w < 0.02 || h < 0.02 || x < 0 || y < 0 || x + w > 1.001 || y + h > 1.001) return null;
+  const r = (n: number) => Math.round(n * 10000) / 10000;
+  return { x: r(x), y: r(y), w: r(Math.min(w, 1 - x)), h: r(Math.min(h, 1 - y)) };
+}
+
 function fail(j: AnyJob, msg: string): false {
   if (!j._cancel) { Object.assign(j, { stage: "error", error: msg, note: null }); log("lavoro", j.id, "fallito:", msg); }
   return false;
@@ -1549,6 +1695,34 @@ async function route(req: Request, remote = false): Promise<Response> {
       return new Response(r.stdout, { headers: { "content-type": "image/jpeg", "cache-control": "max-age=600" } });
     } catch (e) { return json({ error: String(e instanceof Error ? e.message : e).slice(0, 200) }, 422); }
   }
+  // scheda tecnica di un file dal computer o di un link
+  if (p === "/api/details" && m === "GET") {
+    const src = url.searchParams.get("src") || "";
+    const loc = srcOf(src);
+    try {
+      if (loc) {
+        if (url.searchParams.get("loud") === "1") return json({ rows: await measureLoudness(loc.path) });
+        return json({ title: loc.name, sections: await fileDetails(loc.path, loc.name, loc.temp) });
+      }
+      if (!/^https?:\/\//i.test(src)) return json({ error: "Sorgente non valida." }, 400);
+      let c = infoCache.get(src);
+      if (!c || !await exists(c.path)) {
+        await fetch(`http://127.0.0.1:${PORT}/api/info`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: src }) }).then((r) => r.body?.cancel());
+        for (let k = 0; k < 30 && !(c = infoCache.get(src)); k++) await new Promise((r) => setTimeout(r, 100));
+      }
+      if (!c) return json({ error: "Non riesco a leggere le informazioni di questo link." }, 400);
+      const i = JSON.parse(await Deno.readTextFile(c.path));
+      const secs = linkDetails(i);
+      // analisi del flusso video migliore: profondità colore, spazio colore, HDR, profilo… (quello che il sito non dice)
+      try {
+        const sv = await streamUrl(src, false);
+        const deep = (await fileDetails(sv.url, "", true, headerArgs(sv.headers))).filter((x) => /^(Video|Audio)/.test(x.title));
+        for (const x of deep) x.title = `${x.title} (analisi del flusso migliore)`;
+        secs.splice(1, 0, ...deep);
+      } catch { /* analisi non possibile: resta la scheda del sito */ }
+      return json({ title: i.title || src, sections: secs });
+    } catch (e) { return json({ error: `Scheda non disponibile: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` }, 500); }
+  }
   if (p === "/api/download" && m === "POST") {
     const b = await body(req);
     const u = String(b.url || "").trim(), mode = b.mode === "audio" ? "audio" : b.mode === "frame" ? "frame" : "video", fmt = String(b.format || "mp4");
@@ -1585,7 +1759,7 @@ async function route(req: Request, remote = false): Promise<Response> {
       id, url: u, mode, format: fmt, quality: String(b.quality ?? "best"), bitrate: String(b.bitrate ?? "320"),
       thumbnail: b.thumbnail !== false, title: b.title || u, thumb: b.thumb || null, duration: b.duration || null,
       start: start && start > 0 ? start : (end != null ? 0 : null), end,
-      aspect, fit: b.fit === "blur" ? "blur" : "crop", separate, stems, client,
+      aspect, fit: b.fit === "blur" ? "blur" : "crop", separate, stems, client, crop: cropOf(b.crop),
       loud: LOUD.has(String(b.loud)) && separate === "none" && mode !== "frame" ? String(b.loud) : "off",
       fps: mode === "video" && FPS.has(String(b.fps)) ? String(b.fps) : "orig",
       res: mode === "video" && (String(b.res) in RES || resW) ? (resW ? "custom" : String(b.res)) : "orig",

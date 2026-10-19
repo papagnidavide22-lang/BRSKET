@@ -9,6 +9,11 @@ Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che
 
 Poi Brsket si aggiorna da sola.
 
+## Novità della 7.2
+- **Ritaglio scelto da te**: con Ritaglio (proporzioni 9:16, 1:1, 4:5 o misura su misura) compare l'anteprima del video con sopra il riquadro della misura finale. Lo trascini dove vuoi, con lo zoom prendi una parte più piccola, con il cursore cambi fotogramma per controllare. Con Bande nere fa tutto Brsket.
+- Il menu "Immagine" ora si chiama **Aspetto**.
+- **Scheda tecnica**: per ogni file o link tutte le informazioni disponibili. Per i file: contenitore, codec, profilo e livello, risoluzione, proporzioni, frame rate (anche variabile), profondità e spazio colore, HDR, scansione, rotazione, timecode, tracce audio con canali e frequenza, sottotitoli, capitoli, dati della fotocamera e misura del volume (LUFS, dinamica, picco vero). Per i link: canale, data, visualizzazioni, descrizione, tag, capitoli, tutte le qualità video e le tracce audio disponibili, sottotitoli, più l'analisi tecnica del flusso migliore. Con "Copia" la incolli dove vuoi.
+
 ## Novità della 7.1
 - **Verifica dei formati** (Impostazioni): Brsket converte un video di prova in tutti i formati con il tuo Mac e controlla che ogni file si apra fino in fondo. Sul Mac di prova: 104 formati su 104 funzionano.
 - I video Motion JPEG (alcune fotocamere e vecchie regie) ora vengono riconosciuti come video e si convertono.

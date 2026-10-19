@@ -356,6 +356,37 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
 .group[hidden]{display:none}
 .opts > .summary-box{margin-top:clamp(28px,3.5vw,44px);padding-top:clamp(20px,2.5vw,28px);border-top:1px solid var(--surface-2)}
 .opts > .actions{margin-top:clamp(14px,1.8vw,20px)}
+/* ritaglio: riquadro da spostare sull'anteprima */
+.crop-stage{position:relative;width:100%;max-width:760px;background:var(--bg);overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;cursor:crosshair}
+.crop-stage img{display:block;width:100%;height:100%;object-fit:fill;pointer-events:none}
+.crop-rect{position:absolute;box-shadow:0 0 0 9999px rgba(8,8,8,.62);outline:2px solid #fff;outline-offset:-1px;cursor:grab;transition:outline-color .15s}
+.crop-rect:active{cursor:grabbing}
+.crop-rect:focus-visible{outline:3px solid #fff}
+.crop-grid{position:absolute;inset:0;background:linear-gradient(90deg,transparent calc(33.33% - .5px),rgba(255,255,255,.35) calc(33.33% - .5px),rgba(255,255,255,.35) calc(33.33% + .5px),transparent calc(33.33% + .5px),transparent calc(66.66% - .5px),rgba(255,255,255,.35) calc(66.66% - .5px),rgba(255,255,255,.35) calc(66.66% + .5px),transparent calc(66.66% + .5px)),linear-gradient(transparent calc(33.33% - .5px),rgba(255,255,255,.35) calc(33.33% - .5px),rgba(255,255,255,.35) calc(33.33% + .5px),transparent calc(33.33% + .5px),transparent calc(66.66% - .5px),rgba(255,255,255,.35) calc(66.66% - .5px),rgba(255,255,255,.35) calc(66.66% + .5px),transparent calc(66.66% + .5px))}
+.crop-size{position:absolute;left:0;bottom:0;transform:translateY(100%);background:#fff;color:#0c0c0c;font-size:12px;padding:3px 8px;white-space:nowrap}
+.crop-rect.top .crop-size{bottom:auto;top:0;transform:translateY(-100%)}
+.crop-msg{position:absolute;left:12px;top:10px;font-size:var(--step-small);background:var(--ink);color:var(--bg);padding:3px 9px}
+.crop-msg:empty{display:none}
+.crop-ctrl{display:flex;flex-wrap:wrap;gap:12px 22px;align-items:end}
+.crop-ctrl .field{min-width:180px;flex:1}
+.crop-ctrl input[type=range]{width:100%;accent-color:var(--ink)}
+.crop-ctrl .field span{color:var(--ink)}
+/* scheda tecnica */
+.spec-btn{padding:8px 0;margin-top:6px}
+dialog.specs{width:min(860px,calc(100% - 24px))}
+.spec-acts{display:flex;gap:4px}
+.spec-sec h5{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.spec-rows{display:grid;grid-template-columns:minmax(120px,34%) 1fr;gap:0;font-size:var(--step-small)}
+.spec-rows dt,.spec-rows dd{padding:8px 0;border-top:1px solid var(--surface-2);margin:0}
+.spec-rows dt{color:var(--muted);padding-right:14px}
+.spec-rows dd{word-break:break-word}
+.spec-text{white-space:pre-wrap;font-size:var(--step-small);max-height:260px;overflow:auto;background:var(--surface-2);padding:12px 14px;line-height:1.5}
+.spec-table{overflow:auto;max-height:340px}
+.spec-table table{border-collapse:collapse;font-size:12.5px;width:100%;white-space:nowrap}
+.spec-table th{position:sticky;top:0;background:var(--surface);text-align:left;font-weight:500;color:var(--muted);padding:6px 10px 6px 0}
+.spec-table td{padding:6px 10px 6px 0;border-top:1px solid var(--surface-2)}
+.spec-list{margin:0;padding-left:18px;font-size:var(--step-small);display:grid;gap:4px;font-variant-numeric:tabular-nums}
+.spec-loading{display:flex;gap:12px;align-items:center;padding:24px;background:var(--surface)}
 /* verifica dei formati */
 .test-sum{margin-top:12px;font-size:var(--step-body)}
 .test-sum b{font-weight:500}
@@ -457,6 +488,7 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
       <div style="min-width:0">
         <h2 id="title"></h2>
         <p id="meta"></p>
+        <button type="button" class="btn btn-ghost spec-btn" id="specBtn" hidden>Scheda tecnica</button>
         <div class="batch-list" id="batchList" hidden></div>
         <button type="button" class="btn btn-secondary pl-btn" id="plBtn" hidden><span>Scarica tutta la playlist</span></button>
       </div>
@@ -530,14 +562,14 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
         </div>
       </details>
       <details class="group" id="gImage" data-group="gImage">
-        <summary><span class="g-title">Immagine</span><span class="g-sum" id="gImageSum"></span><span class="g-chev" aria-hidden="true"></span></summary>
+        <summary><span class="g-title">Aspetto</span><span class="g-sum" id="gImageSum"></span><span class="g-chev" aria-hidden="true"></span></summary>
         <div class="g-body">
           <div id="aspectBox">
             <div class="label">Proporzioni <span>per Reel, Story, TikTok e post</span></div>
             <div class="chips" id="aspects"></div>
             <div class="panel" id="fitBox" hidden>
               <div class="seg" id="fit"><span class="ind"></span>
-                <button type="button" data-v="crop" class="on">Ritaglio centrato</button>
+                <button type="button" data-v="crop" class="on">Ritaglio</button>
                 <button type="button" data-v="blur">Intero su sfondo sfocato</button>
               </div>
               <p class="hint" style="margin:0" id="fitHint"></p>
@@ -568,6 +600,20 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
               </div>
             </div>
             <p class="hint" id="showHint" hidden></p>
+          </div>
+          <div class="panel crop-panel" id="cropBox" hidden>
+            <div class="label" style="margin:0">Scegli la porzione <span>trascina il riquadro; con lo zoom ne prendi una parte più piccola</span></div>
+            <div class="crop-stage" id="cropStage">
+              <img id="cropImg" alt="Anteprima del video" draggable="false">
+              <div class="crop-rect" id="cropRect" role="slider" tabindex="0" aria-label="Porzione da tenere: frecce per spostare"><i class="crop-grid"></i><span class="crop-size" id="cropSize"></span></div>
+              <span class="crop-msg" id="cropMsg">Anteprima…</span>
+            </div>
+            <div class="crop-ctrl">
+              <label class="field">Zoom <span id="cropZoomTxt">1×</span><input type="range" id="cropZoom" min="1" max="4" step="0.01" value="1"></label>
+              <label class="field" id="cropTBox">Fotogramma dell'anteprima <span id="cropTTxt"></span><input type="range" id="cropT" min="0" step="0.1" value="0"></label>
+              <button type="button" class="btn btn-ghost" id="cropCenter">Rimetti al centro</button>
+            </div>
+            <p class="hint" style="margin:0" id="cropHint"></p>
           </div>
         </div>
       </details>
@@ -685,6 +731,10 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
 <div class="tip" id="tip" hidden></div>
 <div class="dropzone" id="dropzone" aria-hidden="true"><div><b>Lascia qui il file</b><span>Video o audio dal computer: lo converti con le stesse opzioni dei link.</span></div></div>
 
+<dialog id="specs" class="specs">
+  <div class="sheet-head"><h4>Scheda tecnica</h4><div class="spec-acts"><button class="btn btn-ghost" id="specCopy">Copia</button><button class="btn btn-ghost" id="closeSpecs">Fine</button></div></div>
+  <div class="sheet-body" id="specBody"></div>
+</dialog>
 <dialog id="settings">
   <div class="sheet-head"><h4>Impostazioni<span class="saved" id="savedMark">Salvato</span></h4><button class="btn btn-ghost" id="closeSettings">Fine</button></div>
   <div class="sheet-body">
@@ -947,6 +997,8 @@ function renderCard() {
   $('#mode [data-v=video]').disabled = !i.has_video;
   $('#dlLater span').textContent = i.batch ? `Aggiungi ${S.urls.length} alla coda` : 'Aggiungi alla coda';
   S.frameT = Math.round((i.duration || 0) * 0.1 * 100) / 100; fpKey = '';
+  S.crop = { cx: .5, cy: .5, z: 1 }; S.cropT = Math.round((i.duration || 0) * 0.1 * 10) / 10; cropKey = '';
+  $('#specBtn').hidden = !!i.batch;
   $('#card').hidden = false; $('#note').hidden = true;
   $('#card').style.animation = 'none'; void $('#card').offsetWidth; $('#card').style.animation = '';
   setupTrim(); renderOptions();
@@ -986,7 +1038,7 @@ function renderOptions() {
   setSeg($('#fit'), S.fit);
   if (fitWasHidden && !$('#fitBox').hidden) requestAnimationFrame(() => placeSeg($('#fit')));
   $('#fitHint').textContent = S.fit === 'crop'
-    ? 'Riempie tutto lo schermo tagliando i lati: ideale quando il soggetto è al centro.'
+    ? 'Riempie tutto lo schermo tagliando quello che avanza: qui sotto scegli tu quale parte tenere.'
     : 'Il file esce davvero verticale: il video intero sta al centro e lo spazio sopra e sotto è riempito dallo stesso video sfocato.';
   if (['hap','hapq'].includes(S.format) && S.aspect === '4:5' && S.res !== '2160') $('#fitHint').textContent += ' HAP vuole misure multiple di 4: il 4:5 esce 1080 × 1348.';
 
@@ -1030,6 +1082,7 @@ function renderOptions() {
   $('#sepHint').innerHTML = `Crea due file: la sola voce e la sola base, con un modello specializzato sulla voce.${STATUS.separator ? '' : ' La prima volta prepara il motore (circa 350 MB, una volta sola).'}`;
   $('#thumbToggle').hidden = frame || local || !!XF[S.format] || (video && (PRO_KEYS.includes(S.format) || S.format === 'mov' || S.aspect !== 'orig' || S.res !== 'orig' || S.fps !== 'orig')) || (audio && S.separate !== 'none');
   $('#trimBox').hidden = batch || frame;
+  renderCrop();
   $('#qBox').hidden = frame;
   renderFrameBox();
 
@@ -1218,7 +1271,7 @@ function renderGroups(f, t) {
     $('#gFormatSum').textContent = `${video ? 'Video' : 'Solo audio'} ${f}, ${fq}`;
   }
   const img = [S.res === 'custom' ? '' : S.aspect !== 'orig' ? `${S.aspect} ${S.fit === 'blur' ? 'sfondo sfocato' : 'ritaglio'}` : 'Proporzioni originali',
-    resTxt(), S.fps !== 'orig' ? `${S.fps} fps` : ''].filter(Boolean);
+    resTxt(), S.fps !== 'orig' ? `${S.fps} fps` : '', cropTarget() && cropMoved() ? 'porzione scelta' : ''].filter(Boolean);
   $('#gImageSum').textContent = img.join(' · ');
   const aud = [!$('#chBox').hidden ? chName(S.channels) : '',
     !$('#loudBox').hidden ? (S.loud === 'off' ? 'volume originale' : `volume ${LOUD_OPTS.find(o => o[0] === S.loud)[1]}`) : '',
@@ -1470,6 +1523,140 @@ async function pollTest() {
 }
 $('#runTest').onclick = async () => { try { renderTest(await api('/api/selftest', {})); pollTest(); } catch (e) { toast(e.message, 'err'); } };
 
+
+// ---------- ritaglio: riquadro da spostare sull'anteprima ----------
+S.crop = { cx: .5, cy: .5, z: 1 }; S.cropT = 0;
+let cropKey = '', cropTimer = null;
+function cropTarget() {
+  const i = S.info || {};
+  if (S.mode !== 'video' || i.batch || XF[S.format]?.fixed || !i.has_video) return null;
+  if (S.res === 'custom') return S.resFit === 'crop' && customOk() ? [S.resW, S.resH] : null;
+  if (S.aspect !== 'orig' && S.fit === 'crop') return ASPECT_DIMS[S.aspect].map(n => n * (S.res === '2160' ? 2 : 1));
+  return null;
+}
+function srcDims() {
+  const i = S.info || {};
+  if (i.width && i.height) return [i.width, i.height];
+  const h = (i.heights || [])[0] || 1080; return [Math.round(h * (i.ratio || 16 / 9)), h];
+}
+function cropNorm() {
+  const t = cropTarget(); if (!t) return null;
+  const [sw, sh] = srcDims(), TA = t[0] / t[1], SA = sw / sh;
+  let w = TA < SA ? TA / SA : 1, h = TA < SA ? 1 : SA / TA;
+  w /= S.crop.z; h /= S.crop.z;
+  S.crop.cx = Math.min(1 - w / 2, Math.max(w / 2, S.crop.cx)); S.crop.cy = Math.min(1 - h / 2, Math.max(h / 2, S.crop.cy));
+  const r = n => Math.round(n * 10000) / 10000;
+  return { x: r(S.crop.cx - w / 2), y: r(S.crop.cy - h / 2), w: r(w), h: r(h) };
+}
+const cropMoved = () => S.crop.z > 1.001 || Math.abs(S.crop.cx - .5) > .002 || Math.abs(S.crop.cy - .5) > .002;
+function renderCrop() {
+  const t = cropTarget(), box = $('#cropBox');
+  const was = box.hidden; box.hidden = !t;
+  if (!t) return;
+  // il riquadro sta subito sotto la scelta che lo ha aperto (proporzioni o misura su misura)
+  const anchor = S.res === 'custom' ? $('#resCustom') : $('#fitBox');
+  if (anchor.nextElementSibling !== box) anchor.after(box);
+  const [sw, sh] = srcDims(), c = cropNorm();
+  $('#cropStage').style.aspectRatio = `${sw} / ${sh}`;
+  Object.assign($('#cropRect').style, { left: `${c.x * 100}%`, top: `${c.y * 100}%`, width: `${c.w * 100}%`, height: `${c.h * 100}%` });
+  $('#cropRect').classList.toggle('top', c.y + c.h > .9);
+  const pw = Math.round(c.w * sw), ph = Math.round(c.h * sh);
+  $('#cropSize').textContent = `esce ${t[0]} × ${t[1]} · dal video ${pw} × ${ph} px`;
+  $('#cropZoom').value = S.crop.z; $('#cropZoomTxt').textContent = `${S.crop.z.toFixed(1).replace('.', ',')}×`;
+  const d = S.info?.duration || 0;
+  $('#cropTBox').hidden = !d; $('#cropT').max = Math.max(0, d - 0.2); $('#cropT').value = S.cropT; $('#cropTTxt').textContent = fmtTime(S.cropT);
+  $('#cropHint').textContent = pw < t[0] * 0.98 ? `La parte scelta (${pw} × ${ph}) è più piccola della misura finale: verrà ingrandita e perderà un po' di nitidezza.` : '';
+  $('#cropHint').hidden = !$('#cropHint').textContent;
+  if (was || !$('#cropImg').src) cropKey = '';
+  loadCropFrame();
+}
+function loadCropFrame() {
+  const i = S.info || {}; if ($('#cropBox').hidden) return;
+  const src = i.local ? i.src : S.url;
+  const url = `/api/frame?src=${encodeURIComponent(src)}&t=${S.cropT}&w=960`;
+  if (url === cropKey) return;
+  cropKey = url; clearTimeout(cropTimer);
+  $('#cropMsg').textContent = 'Anteprima…';
+  cropTimer = setTimeout(() => {
+    const im = new Image();
+    im.onload = () => { if (cropKey !== url) return; $('#cropImg').src = url; $('#cropMsg').textContent = ''; };
+    im.onerror = () => { if (cropKey !== url) return; $('#cropMsg').textContent = 'Anteprima non disponibile: il riquadro vale lo stesso'; };
+    im.src = url;
+  }, i.local ? 80 : 300);
+}
+function cropMoveTo(cx, cy) { S.crop.cx = cx; S.crop.cy = cy; renderCrop(); updateSummary(); }
+let cropDrag = null;
+$('#cropStage').addEventListener('pointerdown', e => {
+  if ($('#cropBox').hidden) return;
+  const r = $('#cropStage').getBoundingClientRect(), c = cropNorm();
+  const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+  const inside = px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h;
+  if (!inside) { S.crop.cx = px; S.crop.cy = py; renderCrop(); }
+  cropDrag = { dx: px - S.crop.cx, dy: py - S.crop.cy };
+  $('#cropStage').setPointerCapture(e.pointerId); e.preventDefault();
+});
+$('#cropStage').addEventListener('pointermove', e => {
+  if (!cropDrag) return;
+  const r = $('#cropStage').getBoundingClientRect();
+  S.crop.cx = (e.clientX - r.left) / r.width - cropDrag.dx; S.crop.cy = (e.clientY - r.top) / r.height - cropDrag.dy;
+  renderCrop();
+});
+const cropEnd = () => { if (cropDrag) { cropDrag = null; updateSummary(); } };
+$('#cropStage').addEventListener('pointerup', cropEnd); $('#cropStage').addEventListener('pointercancel', cropEnd);
+$('#cropStage').addEventListener('wheel', e => {
+  if ($('#cropBox').hidden) return; e.preventDefault();
+  S.crop.z = Math.min(4, Math.max(1, S.crop.z * Math.pow(1.0018, -e.deltaY))); renderCrop(); updateSummary();
+}, { passive: false });
+$('#cropRect').addEventListener('keydown', e => {
+  const st = e.shiftKey ? .05 : .01, k = { ArrowLeft: [-st, 0], ArrowRight: [st, 0], ArrowUp: [0, -st], ArrowDown: [0, st] }[e.key];
+  if (!k) return; e.preventDefault(); cropMoveTo(S.crop.cx + k[0], S.crop.cy + k[1]);
+});
+$('#cropZoom').oninput = () => { S.crop.z = +$('#cropZoom').value; renderCrop(); updateSummary(); };
+$('#cropT').oninput = () => { S.cropT = +$('#cropT').value; $('#cropTTxt').textContent = fmtTime(S.cropT); loadCropFrame(); };
+$('#cropCenter').onclick = () => { S.crop = { cx: .5, cy: .5, z: 1 }; renderCrop(); updateSummary(); };
+
+// ---------- scheda tecnica ----------
+let SPEC = null;
+function specHtml(sec) {
+  let body = '';
+  if (sec.rows) body += `<dl class="spec-rows">${sec.rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${/^https?:\/\//.test(v) ? `<a class="linkish" href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v)}</dd>`).join('')}</dl>`;
+  if (sec.table) body += `<div class="spec-table"><table><thead><tr>${sec.table.cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${sec.table.rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  if (sec.text) body += `<div class="spec-text">${esc(sec.text)}</div>`;
+  if (sec.list) body += `<ol class="spec-list">${sec.list.map(x => `<li>${esc(x)}</li>`).join('')}</ol>`;
+  return `<section class="spec-sec"><h5>${esc(sec.title)}${sec.action || ''}</h5>${body}</section>`;
+}
+function renderSpecs() {
+  const secs = [...(SPEC.loud ? [{ title: 'Volume (EBU R128)', rows: SPEC.loud }] : []), ...SPEC.sections];
+  const loudBtn = S.info?.local && !SPEC.loud && SPEC.sections.some(x => /^Audio/.test(x.title))
+    ? `<section class="spec-sec"><h5>Volume (EBU R128)</h5><p class="desc" style="margin-bottom:12px">Misura il volume percepito, la dinamica e il picco, come in regia.</p><button type="button" class="btn btn-secondary btn-sm" id="specLoud">Misura il volume</button></section>` : '';
+  $('#specBody').innerHTML = (SPEC.loudBusy ? `<div class="spec-loading"><span class="spin"></span> Misuro il volume…</div>` : loudBtn) + secs.map(specHtml).join('');
+  const lb = $('#specLoud');
+  if (lb) lb.onclick = async () => {
+    SPEC.loudBusy = true; renderSpecs();
+    try { SPEC.loud = (await api(`/api/details?src=${encodeURIComponent(S.info.src)}&loud=1`)).rows; } catch (e) { toast(e.message, 'err'); }
+    SPEC.loudBusy = false; renderSpecs();
+  };
+}
+$('#specBtn').onclick = async () => {
+  const i = S.info; if (!i) return;
+  const src = i.local ? i.src : S.url;
+  $('#specBody').innerHTML = '<div class="spec-loading"><span class="spin"></span> Leggo tutte le informazioni…</div>';
+  $('#specs').showModal();
+  try { const r = await api(`/api/details?src=${encodeURIComponent(src)}`); SPEC = { sections: r.sections, title: r.title }; renderSpecs(); }
+  catch (e) { $('#specBody').innerHTML = `<section><p class="desc">${esc(e.message)}</p></section>`; }
+};
+$('#closeSpecs').onclick = () => $('#specs').close();
+$('#specs').addEventListener('click', e => { if (e.target === $('#specs')) $('#specs').close(); });
+$('#specCopy').onclick = async () => {
+  if (!SPEC) return;
+  const secs = [...(SPEC.loud ? [{ title: 'Volume (EBU R128)', rows: SPEC.loud }] : []), ...SPEC.sections];
+  const txt = `${SPEC.title}\n\n` + secs.map(x => [x.title.toUpperCase(), ...(x.rows || []).map(([k, v]) => `${k}: ${v}`),
+    ...(x.table ? [x.table.cols.join(' | '), ...x.table.rows.map(r => r.join(' | '))] : []), ...(x.text ? [x.text] : []), ...(x.list || [])].join('\n')).join('\n\n');
+  try { await navigator.clipboard.writeText(txt); }
+  catch { const t = document.createElement('textarea'); t.value = txt; document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); }
+  toast('Scheda tecnica copiata', 'ok');
+};
+
 // ---------- taglio ----------
 function setupTrim() {
   const d = Math.floor(S.info?.duration || 0);
@@ -1515,7 +1702,7 @@ async function submit(when, btn) {
     aspect: S.aspect, fit: S.fit, separate: S.mode === 'audio' ? S.separate : 'none', stems: [...S.stems], client: $('#client').value.trim(), when,
     channels: $('#chBox').hidden ? 2 : S.channels,
     fps: S.mode === 'video' ? S.fps : 'orig', res: S.mode === 'video' ? S.res : 'orig', loud: $('#loudBox').hidden ? 'off' : S.loud,
-    resW: S.resW, resH: S.resH, resFit: S.resFit, frameKind: S.frameKind, frameT: S.frameT };
+    resW: S.resW, resH: S.resH, resFit: S.resFit, frameKind: S.frameKind, frameT: S.frameT, crop: S.info?.batch ? undefined : cropNorm() || undefined };
   askNotify();
   try {
     let msg;

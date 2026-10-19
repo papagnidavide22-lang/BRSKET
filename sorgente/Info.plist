@@ -7,8 +7,8 @@
   <key>CFBundleExecutable</key><string>Brsket</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>7.1</string>
-  <key>CFBundleShortVersionString</key><string>7.1</string>
+  <key>CFBundleVersion</key><string>7.2</string>
+  <key>CFBundleShortVersionString</key><string>7.2</string>
   <key>CFBundleDevelopmentRegion</key><string>it</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
