@@ -9,6 +9,10 @@ Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che
 
 Poi Brsket si aggiorna da sola.
 
+## Novità della 6.8
+- Nuovo logo: la U nera su sfondo panna.
+- Opzioni raggruppate in sezioni che si aprono e si chiudono (Formato e qualità, Immagine, Audio, Taglio, Nome e copertina). Da chiuse mostrano un riassunto delle scelte; Brsket ricorda quali tieni aperte.
+
 ## Novità della 6.7
 - Se Brsket è aperta da Download o dal DMG (fuori da Applicazioni) e non può aggiornarsi, ora lo dice con una notifica e si sposta da sola in Applicazioni con un clic (menu Brsket → Sposta in Applicazioni).
 

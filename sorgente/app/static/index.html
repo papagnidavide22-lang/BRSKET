@@ -308,7 +308,7 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
 @media (prefers-reduced-motion:no-preference){
   .hero h1,.hero .sub,.hero .search,.hero .note{opacity:0;transform:translateY(22px);animation:enter .9s var(--ease-out) forwards}
   .hero .sub{animation-delay:.12s}.hero .search{animation-delay:.22s}.hero .note{animation-delay:.3s}
-  .card .opts > div,.card .opts > label{opacity:0;animation:enter .6s var(--ease-out) forwards}
+  .card .opts > div,.card .opts > label,.card .opts > details{opacity:0;animation:enter .6s var(--ease-out) forwards}
   .card .opts > *:nth-child(2){animation-delay:.05s}.card .opts > *:nth-child(3){animation-delay:.1s}
   .card .opts > *:nth-child(4){animation-delay:.15s}.card .opts > *:nth-child(5){animation-delay:.2s}
   .card .opts > *:nth-child(n+6){animation-delay:.25s}
@@ -339,6 +339,23 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
   .summary-box{grid-template-columns:1fr}
   .toggle{font-size:var(--step-body)}
 }
+
+/* gruppi di opzioni apribili */
+.opts{gap:0!important;padding-top:clamp(8px,1.5vw,16px)!important;padding-bottom:clamp(8px,1.5vw,16px)!important}
+.group{border-top:1px solid var(--surface-2)}
+.group:first-child{border-top:0}
+.group > summary{list-style:none;display:flex;align-items:baseline;gap:16px;cursor:pointer;padding:clamp(18px,2.2vw,26px) 0;user-select:none;-webkit-user-select:none}
+.group > summary::-webkit-details-marker{display:none}
+.g-title{font-size:var(--step-lead);font-weight:500;letter-spacing:-.02em;flex-shrink:0}
+.g-sum{color:var(--muted);font-size:var(--step-small);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
+.g-chev{width:12px;height:12px;flex-shrink:0;align-self:center;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg) translate(-3px,-3px);transition:transform .3s var(--ease-out)}
+.group[open] > summary .g-chev{transform:rotate(225deg) translate(-3px,-3px)}
+.group[open] > summary .g-sum{opacity:0}
+.group > summary:hover .g-title{text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}
+.g-body{display:grid;gap:clamp(28px,3.5vw,40px);padding:4px 0 clamp(28px,3.5vw,40px)}
+.group[hidden]{display:none}
+.opts > .summary-box{margin-top:clamp(28px,3.5vw,44px);padding-top:clamp(20px,2.5vw,28px);border-top:1px solid var(--surface-2)}
+.opts > .actions{margin-top:clamp(14px,1.8vw,20px)}
 </style>
 </head>
 <body>
@@ -385,100 +402,125 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
       </div>
     </div>
     <div class="opts">
-      <div>
-        <div class="label">Cosa vuoi</div>
-        <div class="seg" id="mode"><span class="ind"></span>
-          <button type="button" data-v="video" class="on">Video</button>
-          <button type="button" data-v="audio">Solo audio</button>
-        </div>
-      </div>
-      <div>
-        <div class="label">Formato</div>
-        <div class="chips" id="formats"></div>
-      </div>
-      <div id="proBox">
-        <div class="label">Professionale <span>per montaggio e Resolume</span></div>
-        <div class="chips" id="proFormats"></div>
-        <p class="hint" id="proHint" hidden>ProRes e HAP pesano molto. Durante la conversione vedi percentuale e tempo rimanente.</p>
-      </div>
-      <div id="aspectBox">
-        <div class="label">Proporzioni <span>per Reel, Story, TikTok e post</span></div>
-        <div class="chips" id="aspects"></div>
-        <div class="panel" id="fitBox" hidden>
-          <div class="seg" id="fit"><span class="ind"></span>
-            <button type="button" data-v="crop" class="on">Ritaglio centrato</button>
-            <button type="button" data-v="blur">Intero su sfondo sfocato</button>
-          </div>
-          <p class="hint" style="margin:0" id="fitHint"></p>
-        </div>
-      </div>
-      <div id="sepBox" hidden>
-        <div class="label">Separazione <span>facoltativa</span></div>
-        <div class="seg" id="sepMode"><span class="ind"></span>
-          <button type="button" data-v="none" class="on">Nessuna</button>
-          <button type="button" data-v="vocals">Voce e base</button>
-          <button type="button" data-v="stems">Strumenti</button>
-        </div>
-        <div class="panel" id="stemPanel" hidden>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <div class="label" style="margin:0">Tracce da creare</div>
-            <div class="mini-links"><button type="button" class="btn btn-ghost" id="stemsAll">Tutte</button><button type="button" class="btn btn-ghost" id="stemsNone">Nessuna</button></div>
-          </div>
-          <div class="chips" id="stems"></div>
-          <p class="hint" style="margin:0" id="stemHint"></p>
-        </div>
-        <p class="hint" id="sepHint" hidden></p>
-      </div>
-      <div id="showBox">
-        <div class="label">Per lo show <span>file tutti uguali per regia e Resolume</span></div>
-        <div class="show-grid">
+      <details class="group" id="gFormat" data-group="gFormat">
+        <summary><span class="g-title">Formato e qualità</span><span class="g-sum" id="gFormatSum"></span><span class="g-chev" aria-hidden="true"></span></summary>
+        <div class="g-body">
           <div>
-            <div class="sublabel">Frame rate</div>
-            <div class="chips" id="fpsChips"></div>
+            <div class="label">Cosa vuoi</div>
+            <div class="seg" id="mode"><span class="ind"></span>
+              <button type="button" data-v="video" class="on">Video</button>
+              <button type="button" data-v="audio">Solo audio</button>
+            </div>
           </div>
           <div>
-            <div class="sublabel">Risoluzione esatta</div>
-            <div class="chips" id="resChips"></div>
+            <div class="label">Formato</div>
+            <div class="chips" id="formats"></div>
+          </div>
+          <div id="proBox">
+            <div class="label">Professionale <span>per montaggio e Resolume</span></div>
+            <div class="chips" id="proFormats"></div>
+            <p class="hint" id="proHint" hidden>ProRes e HAP pesano molto. Durante la conversione vedi percentuale e tempo rimanente.</p>
+          </div>
+          <div>
+            <div class="label" id="qLabel">Qualità</div>
+            <div class="chips" id="quality"></div>
           </div>
         </div>
-        <p class="hint" id="showHint" hidden></p>
-      </div>
-      <div id="loudBox">
-        <div class="label">Volume uniforme <span>tutti i file allo stesso livello</span></div>
-        <div class="chips" id="loudChips"></div>
-        <p class="hint" id="loudHint" hidden></p>
-      </div>
-      <div id="chBox" hidden>
-        <div class="label">Canali audio <span id="chSub">le tracce di questo video</span></div>
-        <div class="chips" id="channels"></div>
-        <p class="hint" id="chHint" hidden></p>
-      </div>
-      <div>
-        <div class="label" id="qLabel">Qualità</div>
-        <div class="chips" id="quality"></div>
-      </div>
-      <div id="trimBox">
-        <label class="toggle"><input type="checkbox" id="trimOn"> Scarica solo una parte</label>
-        <div class="panel" id="trim" hidden>
-          <div class="range" id="rangeWrap">
-            <div class="track"></div><div class="fill" id="fill"></div>
-            <input type="range" id="rStart" min="0" step="1" value="0" aria-label="Inizio">
-            <input type="range" id="rEnd" min="0" step="1" value="0" aria-label="Fine">
+      </details>
+      <details class="group" id="gImage" data-group="gImage">
+        <summary><span class="g-title">Immagine</span><span class="g-sum" id="gImageSum"></span><span class="g-chev" aria-hidden="true"></span></summary>
+        <div class="g-body">
+          <div id="aspectBox">
+            <div class="label">Proporzioni <span>per Reel, Story, TikTok e post</span></div>
+            <div class="chips" id="aspects"></div>
+            <div class="panel" id="fitBox" hidden>
+              <div class="seg" id="fit"><span class="ind"></span>
+                <button type="button" data-v="crop" class="on">Ritaglio centrato</button>
+                <button type="button" data-v="blur">Intero su sfondo sfocato</button>
+              </div>
+              <p class="hint" style="margin:0" id="fitHint"></p>
+            </div>
           </div>
-          <div class="times">
-            <label class="field">Inizio<input id="tStart" value="0:00" placeholder="0:00" inputmode="numeric"></label>
-            <label class="field">Fine<input id="tEnd" placeholder="fine" inputmode="numeric"></label>
-            <span class="clip-len" id="clipLen"></span>
+          <div id="showBox">
+            <div class="label">Per lo show <span>file tutti uguali per regia e Resolume</span></div>
+            <div class="show-grid">
+              <div>
+                <div class="sublabel">Frame rate</div>
+                <div class="chips" id="fpsChips"></div>
+              </div>
+              <div>
+                <div class="sublabel">Risoluzione esatta</div>
+                <div class="chips" id="resChips"></div>
+              </div>
+            </div>
+            <p class="hint" id="showHint" hidden></p>
           </div>
         </div>
-      </div>
-      <label class="toggle" id="thumbToggle"><input type="checkbox" id="embedThumb" checked> Aggiungi copertina e titolo al file</label>
-      <div class="naming">
-        <div class="label" style="margin:0">Cliente o progetto <span>facoltativo, entra nel nome del file</span></div>
-        <input class="text" id="client" list="clientList" placeholder="Fiera Milano, Evento Rossi" maxlength="60">
-        <datalist id="clientList"></datalist>
-        <div class="preview-name">Il file si chiamerà <b id="namePreview"></b>. <span class="linkish" id="editSchema">Cambia lo schema</span></div>
-      </div>
+      </details>
+      <details class="group" id="gAudio" data-group="gAudio">
+        <summary><span class="g-title">Audio</span><span class="g-sum" id="gAudioSum"></span><span class="g-chev" aria-hidden="true"></span></summary>
+        <div class="g-body">
+          <div id="chBox" hidden>
+            <div class="label">Canali audio <span id="chSub">le tracce di questo video</span></div>
+            <div class="chips" id="channels"></div>
+            <p class="hint" id="chHint" hidden></p>
+          </div>
+          <div id="loudBox">
+            <div class="label">Volume uniforme <span>tutti i file allo stesso livello</span></div>
+            <div class="chips" id="loudChips"></div>
+            <p class="hint" id="loudHint" hidden></p>
+          </div>
+          <div id="sepBox" hidden>
+            <div class="label">Separazione <span>facoltativa</span></div>
+            <div class="seg" id="sepMode"><span class="ind"></span>
+              <button type="button" data-v="none" class="on">Nessuna</button>
+              <button type="button" data-v="vocals">Voce e base</button>
+              <button type="button" data-v="stems">Strumenti</button>
+            </div>
+            <div class="panel" id="stemPanel" hidden>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <div class="label" style="margin:0">Tracce da creare</div>
+                <div class="mini-links"><button type="button" class="btn btn-ghost" id="stemsAll">Tutte</button><button type="button" class="btn btn-ghost" id="stemsNone">Nessuna</button></div>
+              </div>
+              <div class="chips" id="stems"></div>
+              <p class="hint" style="margin:0" id="stemHint"></p>
+            </div>
+            <p class="hint" id="sepHint" hidden></p>
+          </div>
+        </div>
+      </details>
+      <details class="group" id="gTrim" data-group="gTrim">
+        <summary><span class="g-title">Taglio</span><span class="g-sum" id="gTrimSum"></span><span class="g-chev" aria-hidden="true"></span></summary>
+        <div class="g-body">
+          <div id="trimBox">
+            <label class="toggle"><input type="checkbox" id="trimOn"> Scarica solo una parte</label>
+            <div class="panel" id="trim" hidden>
+              <div class="range" id="rangeWrap">
+                <div class="track"></div><div class="fill" id="fill"></div>
+                <input type="range" id="rStart" min="0" step="1" value="0" aria-label="Inizio">
+                <input type="range" id="rEnd" min="0" step="1" value="0" aria-label="Fine">
+              </div>
+              <div class="times">
+                <label class="field">Inizio<input id="tStart" value="0:00" placeholder="0:00" inputmode="numeric"></label>
+                <label class="field">Fine<input id="tEnd" placeholder="fine" inputmode="numeric"></label>
+                <span class="clip-len" id="clipLen"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+      <details class="group" id="gName" data-group="gName">
+        <summary><span class="g-title">Nome e copertina</span><span class="g-sum" id="gNameSum"></span><span class="g-chev" aria-hidden="true"></span></summary>
+        <div class="g-body">
+          <label class="toggle" id="thumbToggle"><input type="checkbox" id="embedThumb" checked> Aggiungi copertina e titolo al file</label>
+          <div class="naming">
+            <div class="label" style="margin:0">Cliente o progetto <span>facoltativo, entra nel nome del file</span></div>
+            <input class="text" id="client" list="clientList" placeholder="Fiera Milano, Evento Rossi" maxlength="60">
+            <datalist id="clientList"></datalist>
+            <div class="preview-name">Il file si chiamerà <b id="namePreview"></b>. <span class="linkish" id="editSchema">Cambia lo schema</span></div>
+          </div>
+        </div>
+      </details>
       <div class="summary-box">
         <div>
           <div class="size" id="size"></div>
@@ -890,7 +932,41 @@ function updateSummary() {
   $('#namePreview').textContent = previewName();
   const noStems = S.separate === 'stems' && !S.stems.size;
   $('#dlNow').disabled = $('#dlLater').disabled = noStems || !!(t && t.error);
+  renderGroups(f, t);
 }
+
+// ---------- gruppi di opzioni: riassunto quando sono chiusi, nascosti se vuoti ----------
+function renderGroups(f, t) {
+  const video = S.mode === 'video';
+  const fq = video ? (S.quality === 'best' ? 'qualità migliore' : qLabel(+S.quality)) : (LOSSLESS.includes(S.format) ? 'lossless' : `${S.bitrate} kbps`);
+  $('#gFormatSum').textContent = `${video ? 'Video' : 'Solo audio'} ${f}, ${fq}`;
+  const img = [S.aspect !== 'orig' ? `${S.aspect} ${S.fit === 'blur' ? 'sfondo sfocato' : 'ritaglio'}` : 'Proporzioni originali',
+    S.res !== 'orig' ? (S.res === '2160' ? '4K' : '1080p') : '', S.fps !== 'orig' ? `${S.fps} fps` : ''].filter(Boolean);
+  $('#gImageSum').textContent = img.join(' · ');
+  const aud = [!$('#chBox').hidden ? chName(S.channels) : '',
+    !$('#loudBox').hidden ? (S.loud === 'off' ? 'volume originale' : `volume ${LOUD_OPTS.find(o => o[0] === S.loud)[1]}`) : '',
+    !$('#sepBox').hidden && S.separate !== 'none' ? (S.separate === 'vocals' ? 'voce e base' : `${S.stems.size} tracce separate`) : ''].filter(Boolean);
+  $('#gAudioSum').textContent = aud.join(' · ');
+  $('#gTrimSum').textContent = t && !t.error ? `da ${fmtTime(t.start || 0)} a ${t.end != null ? fmtTime(t.end) : 'fine'}` : 'File intero';
+  $('#gNameSum').textContent = $('#namePreview').textContent + (!$('#thumbToggle').hidden && $('#embedThumb').checked ? ', con copertina' : '');
+  // un gruppo senza opzioni visibili sparisce (es. Immagine in Solo audio)
+  $$('.group').forEach(g => {
+    const kids = [...g.querySelector('.g-body').children];
+    g.hidden = !kids.some(k => !k.hidden);
+  });
+}
+const GROUP_KEY = 'brsket.gruppi';
+function loadGroups() {
+  let st = null;
+  try { st = JSON.parse(localStorage.getItem(GROUP_KEY) || 'null'); } catch {}
+  $$('.group').forEach(g => { g.open = st && g.id in st ? !!st[g.id] : g.id === 'gFormat'; });
+}
+$$('.group').forEach(g => g.addEventListener('toggle', () => {
+  const st = {}; $$('.group').forEach(x => st[x.id] = x.open);
+  try { localStorage.setItem(GROUP_KEY, JSON.stringify(st)); } catch {}
+  if (g.open) g.querySelectorAll('.seg').forEach(x => placeSeg(x));   // gli indicatori dei selettori si riposizionano
+}));
+loadGroups();
 
 function estimate() {
   const i = S.info; if (!i || i.batch || !i.duration) return null;
