@@ -9,5 +9,11 @@ Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che
 
 Poi Brsket si aggiorna da sola.
 
+## Novità della 6.5
+- **Volume uniforme**: porta ogni file a −14 LUFS (streaming), −16 (podcast) o −23 (broadcast EBU R128).
+- **Frame rate e risoluzione per lo show**: 24, 25, 30, 50 o 60 fps e 1080p o 4K esatti, anche con ProRes e HAP.
+- **Playlist intere**: incolli il link di una playlist e tutti i video vanno in coda.
+- **Video protetti da login**: Brsket può usare l'accesso già fatto nel browser (Impostazioni → Accesso ai siti).
+
 ## Aggiornamenti
 La cartella `aggiornamenti/` contiene l'ultima versione: `latest.json` dice quale è, `Brsket.zip` è il pacchetto che l'app scarica da sola, `Brsket.dmg` è per le nuove installazioni.
