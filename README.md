@@ -9,6 +9,20 @@ Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che
 
 Poi Brsket si aggiorna da sola.
 
+## Novità della 7.0
+- **90 formati in più** nel nuovo riquadro "Tutti i formati", con la ricerca:
+  - **Professionale**: ProRes 422 Proxy, LT, 422 e 4444 XQ; DNxHR LB, SQ, HQ, HQX, 444 e DNxHR in MXF per Avid; GoPro CineForm; HAP Alpha; QuickTime Animation; non compresso 10 bit; FFV1; Ut Video; Motion JPEG.
+  - **Broadcast**: XDCAM HD422 in MXF, MPEG-TS, M2TS, MPEG-2, DVD PAL, DV PAL.
+  - **Web e moderni**: HEVC (anche 10 bit), AV1, WebM AV1 e VP8, OGV, GIF animata, PNG animato, WebP animato, FLV.
+  - **Vecchi formati**: WMV, AVI DivX/Xvid, MPEG-1 VCD, 3GP, RealMedia.
+  - **Sequenze di immagini**: PNG, TIFF 16 bit, DPX 10 bit, OpenEXR, JPG, TGA (una cartella, un file per fotogramma).
+  - **Audio da studio**: WAV 24 bit e 32 bit float, BWF, AIFF, CAF, Wave64, WavPack, TTA, MKA, OGA.
+  - **Cinema e broadcast**: AC-3, E-AC-3, DTS, Dolby TrueHD, MP2, MOV solo audio.
+  - **Altri audio**: AAC, WMA, AU, Speex, ADPCM, WAV 8 bit, μ-law, GSM, VOC, MMF, SBC, aptX, Codec 2, DFPWM.
+  - **Immagini** (fotogramma): WebP, TIFF, AVIF, JPEG XL, JPEG 2000, BMP, TGA, DPX, OpenEXR, QOI, GIF, PPM, PCX, SGI, Sun Raster.
+- Ogni formato sa i suoi limiti: canali massimi (es. AC-3 fino a 5.1), mono obbligato, misure fisse (XDCAM 1920 × 1080, DVD 720 × 576) e lo dice prima di convertire.
+- I formati che l'FFmpeg del Mac non ha vengono mostrati come "Non disponibile".
+
 ## Novità della 6.9
 - **Converti i file che hai già**: trascina un file video o audio nella finestra (o sull'icona nel Dock, o scegli "Converti un file dal computer") e usa le stesse opzioni dei link: HAP, ProRes, 9:16, volume uniforme, taglio, canali. Il file originale non viene toccato.
 - **Fotogramma e copertina**: salva un fotogramma a un istante preciso (con anteprima e avanti/indietro di un fotogramma) o la copertina originale, in JPG o PNG. Funziona con i link e con i file.

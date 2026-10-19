@@ -1,5 +1,6 @@
 // Brsket — server locale portatile (Deno + yt-dlp + FFmpeg, tutto nella cartella bin/)
 // Avvio: ./bin/deno run --allow-all server.ts
+import { XF, xfAvailable, xfVideoArgs } from "./formati.ts";
 
 const WIN = Deno.build.os === "windows";
 const MAC = Deno.build.os === "darwin";
@@ -95,7 +96,14 @@ const PRO: Record<string, { encoder: string; args: string[]; mult4?: boolean }> 
   hap: { encoder: "hap", args: ["-c:v", "hap", "-format", "hap", "-c:a", "pcm_s16le"], mult4: true },
   hapq: { encoder: "hap", args: ["-c:v", "hap", "-format", "hap_q", "-c:a", "pcm_s16le"], mult4: true },
 };
-const VIDEO = new Set([...VIDEO_STD, ...Object.keys(PRO)]);
+// formati in più (catalogo in formati.ts)
+for (const [k, f] of Object.entries(XF)) FORMAT_LABEL[k] = f.label;
+const VIDEO = new Set([...VIDEO_STD, ...Object.keys(PRO), ...Object.keys(XF).filter((k) => XF[k].mode === "video")]);
+for (const k of Object.keys(XF)) { if (XF[k].mode === "audio") AUDIO.add(k); if (XF[k].mode === "frame") FRAME.add(k); }
+const xfOf = (fmt: unknown) => XF[String(fmt)] as (typeof XF)[string] | undefined;
+const extOf = (fmt: string) => xfOf(fmt)?.ext || (fmt in PRO || fmt === "mov" ? "mov" : AUDIO_EXT[fmt] || fmt);
+let xfOk: string[] = [];
+let ENCODERS = "";
 const ASPECTS: Record<string, [number, number]> = { "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };
 const STEMS_IT: Record<string, string> = {
   vocals: "voce", drums: "batteria", bass: "basso", guitar: "chitarra", piano: "piano", other: "altro", instrumental: "strumentale",
@@ -109,6 +117,9 @@ async function detectPro() {
     const list = new TextDecoder().decode(r.stdout);
     hwH264 = MAC && /\sh264_videotoolbox\s/.test(list);
     proAvailable = Object.entries(PRO).filter(([, v]) => new RegExp(`\\s${v.encoder}\\s`).test(list)).map(([k]) => k);
+    const mx = await new Deno.Command(FFMPEG, { args: ["-hide_banner", "-muxers"], stdout: "piped", stderr: "null" }).output();
+    ENCODERS = list;
+    xfOk = xfAvailable(list, new TextDecoder().decode(mx.stdout));
   } catch { /* ffmpeg non ancora pronto */ }
 }
 let ytdlpVersion = "";
@@ -244,7 +255,7 @@ async function uniquePath(name: string): Promise<string> {
 const sepMode = (j: AnyJob) => (j.mode === "audio" ? String(j.separate || "none") : "none");
 const showFix = (j: AnyJob) => j.mode === "video" && ((j.fps && j.fps !== "orig") || (j.res && j.res !== "orig"));
 function needsTmpPost(j: AnyJob) {
-  return (j.mode === "video" && ((j.format as string) in PRO || j.format === "mov" || (j.aspect && j.aspect !== "orig") || showFix(j))) ||
+  return (!!xfOf(j.format) && j.mode !== "frame") || (j.mode === "video" && ((j.format as string) in PRO || j.format === "mov" || (j.aspect && j.aspect !== "orig") || showFix(j))) ||
     sepMode(j) !== "none";
 }
 function planPhases(j: AnyJob): Phase[] {
@@ -397,7 +408,8 @@ function ffmpegProgress(j: AnyJob, phase: string, duration: number) {
 // canali da produrre: riduzione (es. 7.1 -> stereo) oppure, se il video ha solo lo stereo,
 // 5.1 / 7.1 creati dallo stereo (upmix) quando li scegli
 function targetChannels(j: AnyJob, have: number): number | null {
-  const want = Math.min(Number(j.channels) || 2, ["mp3", "avi"].includes(j.format as string) ? 2 : 99);
+  const xf = xfOf(j.format);
+  const want = xf?.ac ? xf.ac : Math.min(Number(j.channels) || 2, xf?.maxCh || (["mp3", "avi"].includes(j.format as string) ? 2 : 99));
   if (have > want) return want;
   if (have <= 2 && (want === 6 || want === 8)) return want;
   if (have === 1 && want === 2) return 2;   // stereo scelto, sorgente mono: due canali uguali
@@ -482,7 +494,9 @@ async function normalizeLoudness(j: AnyJob, f: string): Promise<boolean> {
   const ch = info.channels || 2;
   const lossyBr = `${Math.max(Number(j.mode === "audio" ? j.bitrate : 256) || 256, ch > 2 ? ch * 64 : 0)}k`;
   let enc: string[];
-  if (/^pcm_/.test(info.acodec)) enc = ["-c:a", info.acodec === "pcm_s24le" ? "pcm_s24le" : "pcm_s16le"];
+  const xf = xfOf(j.format);
+  if (xf && xf.a) enc = xfAudio(xf, String(j.bitrate || 256), ch).filter((x, i, arr) => !(x === "-ar" || arr[i - 1] === "-ar"));
+  else if (/^pcm_/.test(info.acodec)) enc = ["-c:a", info.acodec === "pcm_s24le" ? "pcm_s24le" : "pcm_s16le"];
   else if (info.acodec === "flac") enc = ["-c:a", "flac"];
   else if (info.acodec === "alac") enc = ["-c:a", "alac"];
   else if (ext === "mp3" || ext === "avi") enc = ["-c:a", "libmp3lame", "-b:a", ext === "avi" ? "192k" : lossyBr];
@@ -515,9 +529,15 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
   const k = j.res === "2160" ? 2 : 1;   // 4K: proporzioni social al doppio (es. 9:16 = 2160x3840)
   const cr = customRes(j);   // misura su misura: vince sulle proporzioni
   const aspect = !cr && j.aspect && j.aspect !== "orig" ? ASPECTS[j.aspect as string].map((n) => n * k) as [number, number] : null;
-  const forced = cr || (!aspect && j.res && j.res !== "orig" ? RES[j.res as string] : null);
-  const fpsF = j.fps && j.fps !== "orig" ? `fps=${j.fps}` : "";
-  const extra = [fpsF, pro?.mult4 ? "scale=trunc(iw/4)*4:trunc(ih/4)*4" : ""].filter(Boolean).join(",");
+  const xf = xfOf(fmt);
+  // misura obbligata del formato (es. XDCAM 1920x1080) quando la risoluzione resta "Originale"
+  const forced = cr || (!aspect && j.res && j.res !== "orig" ? RES[j.res as string] : null) || (!aspect && xf?.size ? xf.size : null);
+  const fpsV = j.fps && j.fps !== "orig" ? String(j.fps) : xf?.fps || "";
+  const fpsF = fpsV ? `fps=${fpsV}` : "";
+  const mult = pro?.mult4 ? 4 : xf?.mult || 0;
+  const extra = [!forced && !aspect && xf?.maxW ? `scale='min(iw,${xf.maxW})':-2:flags=lanczos` : "", fpsF,
+    mult ? `scale=trunc(iw/${mult})*${mult}:trunc(ih/${mult})*${mult}` : "", xf?.vf || ""].filter(Boolean).join(",");
+  const noAudio = xf?.a === null;
   const args: string[] = [];
   if (forced) {
     const [W, H] = forced;
@@ -527,7 +547,7 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
       ? `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},setsar=1`
       : `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
     if (extra) chain += `,${extra}`;
-    args.push("-filter_complex", `${chain}[v]`, "-map", "[v]", "-map", "0:a?");
+    args.push("-filter_complex", `${chain}[v]`, "-map", "[v]", ...(noAudio ? [] : ["-map", "0:a?"]));
   } else if (aspect) {
     const [W, H] = aspect;
     let chain = j.fit === "blur"
@@ -535,12 +555,18 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
         `[fg]scale=${W}:${H}:force_original_aspect_ratio=decrease[f];[b][f]overlay=(W-w)/2:(H-h)/2,setsar=1`
       : `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`;
     if (extra) chain += `,${extra}`;
-    args.push("-filter_complex", `${chain}[v]`, "-map", "[v]", "-map", "0:a?");
+    args.push("-filter_complex", `${chain}[v]`, "-map", "[v]", ...(noAudio ? [] : ["-map", "0:a?"]));
   } else {
     if (extra) args.push("-vf", extra);
-    args.push("-map", "0:v:0", "-map", "0:a?");
+    args.push("-map", "0:v:0", ...(noAudio ? [] : ["-map", "0:a?"]));
   }
   const to = targetChannels(j, info.channels);
+  if (xf) {
+    // formato del catalogo: video come previsto, audio adattato (canali e frequenza del formato)
+    if (!noAudio) args.push(...chanArgs(info.channels, to));
+    args.push(...xfVideoArgs(xf, ENCODERS), ...(noAudio || !info.acodec ? ["-an"] : xfAudio(xf, "256", to || info.channels)));
+    return args;
+  }
   args.push(...chanArgs(info.channels, to));
   const oc = to || info.channels;
   if (pro) { args.push(...pro.args); return args; }
@@ -576,6 +602,8 @@ function videoArgs(j: AnyJob, info: Probe): string[] {
 }
 
 function audioArgs(fmt: string, br: string): string[] {
+  const xf = xfOf(fmt);
+  if (xf && xf.mode !== "frame") return xfAudio(xf, br);
   switch (fmt) {
     case "mp3": return ["-c:a", "libmp3lame", "-b:a", `${br}k`];
     case "m4a": return ["-c:a", "aac", "-b:a", `${br}k`];
@@ -586,6 +614,18 @@ function audioArgs(fmt: string, br: string): string[] {
     case "ogg": return ["-c:a", "libvorbis", "-b:a", `${br}k`];
   }
   return [];
+}
+
+// audio di un formato del catalogo: codec, bitrate scelto (se previsto), frequenza obbligata
+function xfAudio(xf: NonNullable<ReturnType<typeof xfOf>>, br?: string, ch = 2): string[] {
+  if (xf.a === null) return ["-an"];
+  const a = [...(xf.a || [])];
+  if (xf.aBr) {
+    const kb = Math.max(Number(br) || 0, xf.kbps || 0, ch > 2 ? ch * 80 : 0);
+    a.push("-b:a", `${Math.min(kb, xf.maxCh && xf.maxCh > 2 ? 640 : 384)}k`);
+  }
+  if (xf.ar) a.push("-ar", String(xf.ar));
+  return a;
 }
 
 // ---------- motore di separazione (Python portatile via uv, tutto in bin/separa) ----------
@@ -666,7 +706,7 @@ async function prepWav(j: AnyJob, src: string): Promise<string | null> {
 }
 
 async function encodeStems(j: AnyJob, stems: [string, string][]): Promise<boolean> {
-  const fmt = j.format as string, ext = AUDIO_EXT[fmt] || fmt;
+  const fmt = j.format as string, ext = extOf(fmt);
   j._files = [];
   let k = 0;
   for (const [file, label] of stems) {
@@ -836,7 +876,8 @@ function trimArgs(j: AnyJob, dur: number): [string[], string[], number] {
   const len = Math.max(0.1, end - st);
   return [st > 0 ? ["-ss", String(st)] : [], ["-t", String(len)], len];
 }
-async function convertLocal(j: AnyJob, src: string): Promise<boolean> {
+// conversione con FFmpeg di un file sul computer (o già scaricato: allora il taglio è già fatto, trim = false)
+async function convertLocal(j: AnyJob, src: string, trim = true): Promise<boolean> {
   const info = await probe(src);
   const sep = sepMode(j);
   if (sep !== "none") {
@@ -846,8 +887,9 @@ async function convertLocal(j: AnyJob, src: string): Promise<boolean> {
   const fmt = j.format as string, video = j.mode === "video";
   if (!video && !info.acodec) return fail(j, "Questo file non ha audio.");
   if (video && !info.vcodec) return fail(j, "Questo file non ha video: scegli Solo audio.");
-  const ext = video ? (fmt in PRO || fmt === "mov" ? "mov" : fmt) : (AUDIO_EXT[fmt] || fmt);
-  const [pre, post, len] = trimArgs(j, info.duration);
+  const xf = xfOf(fmt);
+  const ext = extOf(fmt);
+  const [pre, post, len] = trim ? trimArgs(j, info.duration) : [[], [], info.duration];
   let args: string[];
   if (video) {
     j._res = resToken(j, info);
@@ -855,15 +897,24 @@ async function convertLocal(j: AnyJob, src: string): Promise<boolean> {
   } else {
     const to = targetChannels(j, info.channels), oc = to || info.channels;
     const br = !LOSSLESS.has(fmt) && oc > 2 && !["mp3", "ogg"].includes(fmt) ? String(Math.max(Number(j.bitrate) || 0, oc * 64)) : String(j.bitrate);
-    args = ["-map", "0:a:0", "-vn", ...chanArgs(info.channels, to), ...audioArgs(fmt, br)];
+    args = ["-map", "0:a:0", "-vn", ...chanArgs(info.channels, to), ...(xf ? xfAudio(xf, String(j.bitrate), oc) : audioArgs(fmt, br))];
     // WAV e FLAC da un file a 24 bit restano a 24 bit
     if (fmt === "wav" && /^pcm_s(24|32)/.test(info.acodec)) args.push("-c:a", "pcm_s24le");
     if (fmt === "m4a" || fmt === "alac") args.push("-movflags", "+faststart");
   }
-  const dest = await uniquePath(fileName(j, ext));
+  // sequenza di immagini: una cartella con un file per fotogramma (nome_000001.png, …)
+  let dest: string, target: string;
+  if (xf?.seq) {
+    const base = fileName(j, "x").replace(/\.x$/, "");
+    dest = join(OUT, base); let n = 2;
+    while (await exists(dest)) dest = join(OUT, `${base} (${n++})`);
+    await Deno.mkdir(dest, { recursive: true });
+    target = join(dest, `${base}_%06d.${ext}`);
+  } else target = dest = await uniquePath(fileName(j, ext));
   setPhase(j, "convert", 0, "convert");
+  const meta = xf?.seq ? [] : ["-map_metadata", "0", "-metadata", `title=${(j._meta as Record<string, string>)?.title || j.title}`];
   const [ok, err] = await runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", "-progress", "pipe:1", ...pre, "-i", src, ...post,
-    ...args, "-map_metadata", "0", "-metadata", `title=${(j._meta as Record<string, string>)?.title || j.title}`, dest], ffmpegProgress(j, "convert", len));
+    ...args, ...meta, target], ffmpegProgress(j, "convert", len));
   if (j._cancel || !ok) {
     await rm(dest);
     if (!j._cancel) { log("conversione file locale non riuscita:", err.slice(-400)); fail(j, `Conversione ${FORMAT_LABEL[fmt]} non riuscita. ${err.trim().split("\n").pop()?.slice(0, 200) || ""}`); }
@@ -919,7 +970,8 @@ async function frameInput(src: string, t: number, cover: boolean, preview: boole
 }
 async function runFrame(j: AnyJob): Promise<boolean> {
   const cover = j.frameKind === "cover";
-  const ext = j.format === "png" ? "png" : "jpg";
+  const xfi = xfOf(j.format);
+  const ext = xfi ? xfi.ext : j.format === "png" ? "png" : "jpg";
   let t = Math.max(0, Number(j.frameT) || 0);
   if (j.duration && t > Number(j.duration)) t = Math.max(0, Number(j.duration) - 0.1);
   setPhase(j, "frame", null, "process");
@@ -927,8 +979,10 @@ async function runFrame(j: AnyJob): Promise<boolean> {
   const loc = srcOf(j.url);
   j._meta = loc ? { title: loc.title } : j._meta || { title: j.title };
   const dest = await uniquePath(fileName(j, ext, cover ? " (copertina)" : ` (fotogramma ${mmss(t)}${t % 1 ? "." + String(Math.round((t % 1) * 100)).padStart(2, "0") : ""})`));
-  const enc = ext === "png" ? ["-c:v", "png", "-pix_fmt", "rgb24"] : ["-c:v", "mjpeg", "-q:v", "2", "-pix_fmt", "yuvj444p"];
-  const run = async (input: string[]) => runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", ...input, "-frames:v", "1", "-update", "1", ...enc, dest], () => {});
+  const enc = xfi ? [...(xfi.vf ? ["-vf", xfi.vf] : []), ...xfVideoArgs(xfi, ENCODERS)]
+    : ext === "png" ? ["-c:v", "png", "-pix_fmt", "rgb24"] : ["-c:v", "mjpeg", "-q:v", "2", "-pix_fmt", "yuvj444p"];
+  const imgMux = !xfi?.mux;   // AVIF ha il suo contenitore: "-update" vale solo per le immagini semplici
+  const run = async (input: string[]) => runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", ...input, "-frames:v", "1", ...(imgMux ? ["-update", "1"] : []), ...enc, dest], () => {});
   let ok = false, err = "";
   try { [ok, err] = await run(await frameInput(String(j.url), t, cover, false, j.thumb as string | undefined)); }
   catch (e) { err = String(e instanceof Error ? e.message : e); }
@@ -1018,6 +1072,10 @@ async function runJob(j: AnyJob) {
       const done = sep === "stems" ? await separateStems(j, src) : await separateVocals(j, src);
       await rm(src);
       if (!done) return;
+    } else if (xfOf(fmt)) {
+      const done = await convertLocal(j, src, false);
+      await rm(src);
+      if (!done) return;
     } else if (needsTmpPost(j)) {
       const info = await probe(src);
       const ext = fmt in PRO || fmt === "mov" ? "mov" : fmt;
@@ -1052,16 +1110,27 @@ async function runJob(j: AnyJob) {
       for (const f of j._files || []) if (!await normalizeLoudness(j, f)) return;
     }
     const files = [];
-    for (const f of j._files || []) files.push({ name: f.split(/[\\/]/).pop(), size: (await Deno.stat(f)).size });
+    let firstFile = (j._files || [])[0], frames = 0;
+    for (const f of j._files || []) {
+      const st = await Deno.stat(f);
+      if (st.isDirectory) {
+        // sequenza: peso totale e numero di fotogrammi
+        let size = 0; const names: string[] = [];
+        for await (const e of Deno.readDir(f)) if (e.isFile) { names.push(e.name); size += (await Deno.stat(join(f, e.name))).size; }
+        names.sort(); frames = names.length;
+        if (f === firstFile && names.length) firstFile = join(f, names[0]);
+        files.push({ name: f.split(/[\\/]/).pop(), size, folder: true, frames });
+      } else files.push({ name: f.split(/[\\/]/).pop(), size: st.size });
+    }
     // cosa è uscito davvero (si vede nei Completati): risoluzione, fps e canali del primo file
     try {
-      const pr = await new Deno.Command(FFPROBE, { args: ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,avg_frame_rate,channels", "-of", "json", (j._files || [])[0]], stdout: "piped", stderr: "null" }).output();
+      const pr = await new Deno.Command(FFPROBE, { args: ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,avg_frame_rate,channels", "-of", "json", firstFile], stdout: "piped", stderr: "null" }).output();
       // deno-lint-ignore no-explicit-any
       const st = (JSON.parse(new TextDecoder().decode(pr.stdout)).streams || []) as any[];
-      const v = st.find((x) => x.codec_type === "video" && (j.mode === "frame" || !["mjpeg", "png"].includes(x.codec_name)));
+      const v = st.find((x) => x.codec_type === "video" && (j.mode === "frame" || !!xfOf(j.format) || !["mjpeg", "png"].includes(x.codec_name)));
       const a = st.find((x) => x.codec_type === "audio");
       const [fn, fd] = String(v?.avg_frame_rate || "0/1").split("/").map(Number);
-      j.out = { w: v?.width || null, h: v?.height || null, fps: fd ? Math.round(fn / fd * 100) / 100 : null, ch: a?.channels || null };
+      j.out = { w: v?.width || null, h: v?.height || null, fps: frames ? null : fd ? Math.round(fn / fd * 100) / 100 : null, ch: a?.channels || null, frames: frames || null };
     } catch { /* */ }
     for (const x of j.phases) { x.state = "done"; x.p = 1; }
     Object.assign(j, { stage: "done", percent: 100, overall: 100, eta: null, eta_total: null, files, filename: files[0]?.name,
@@ -1200,7 +1269,10 @@ async function route(req: Request, remote = false): Promise<Response> {
     }
     if (setupTotal && setupBytes > setupTotal * 0.97) setupTotal = Math.round(setupBytes * 1.08);   // stima del server troppo bassa
     return json({ root: ROOT, build: BUILD, managed: !!(Deno.env.get("SCARICA_HOSTED") || Deno.env.get("SCARICA_LAUNCHD")), ffmpeg: t.ff, ready: t.ff && t.yt, setup, setupBytes, setupTotal, ytdlp: ytdlpVersion, folder: OUT, pro: proAvailable, os: Deno.build.os,
-      remote, separator: await exists(MODEL), stemsReady: await exists(STEMS_READY) });
+      remote, separator: await exists(MODEL), stemsReady: await exists(STEMS_READY),
+      xf: Object.entries(XF).map(([k, f]) => ({ k, mode: f.mode, label: f.label, sub: f.sub, group: f.group, ext: f.ext, ok: xfOk.includes(k),
+        maxCh: f.ac || f.maxCh || null, lossless: !!f.lossless, aBr: !!f.aBr, kbps: f.kbps || null, mbps: f.mbps || null, seq: !!f.seq,
+        noAudio: f.a === null, heavy: !!f.heavy, size: f.size || null, fps: f.fps || null, maxW: f.maxW || null })) });
   }
   if (p === "/api/settings") {
     if (m === "POST") {
@@ -1391,6 +1463,7 @@ async function route(req: Request, remote = false): Promise<Response> {
       resW = Math.round(resW / q) * q; resH = Math.round(resH / q) * q;
     }
     if (fmt in PRO && !proAvailable.includes(fmt)) return json({ error: `${FORMAT_LABEL[fmt]} non è disponibile in questo FFmpeg.` }, 400);
+    if (xfOf(fmt) && !xfOk.includes(fmt)) return json({ error: `${FORMAT_LABEL[fmt]} non è disponibile in questo FFmpeg.` }, 400);
     const start = toSec(b.start), end = toSec(b.end);
     if ((b.start && start == null) || (b.end && end == null)) return json({ error: "Orario del taglio non valido: usa ad esempio 1:20." }, 400);
     if (start != null && end != null && end <= start) return json({ error: "La fine del taglio deve venire dopo l'inizio." }, 400);
@@ -1463,6 +1536,7 @@ async function route(req: Request, remote = false): Promise<Response> {
     }
     if (jm[2] === "/file") {
       const f = (j._files || [])[Number(url.searchParams.get("i") || 0)];
+      if (f && (await Deno.stat(f).catch(() => null))?.isDirectory) return json({ error: "Le sequenze di immagini sono una cartella: aprila dal computer con «Mostra nella cartella»." }, 400);
       if (f && await exists(f)) {
         const fh = await Deno.open(f);
         const name = f.split(/[\\/]/).pop()!;

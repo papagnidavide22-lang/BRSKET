@@ -356,6 +356,19 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
 .group[hidden]{display:none}
 .opts > .summary-box{margin-top:clamp(28px,3.5vw,44px);padding-top:clamp(20px,2.5vw,28px);border-top:1px solid var(--surface-2)}
 .opts > .actions{margin-top:clamp(14px,1.8vw,20px)}
+/* tutti i formati */
+.morefmt{background:var(--surface-2);margin-top:2px}
+.morefmt summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:12px;padding:16px 18px;font-size:var(--step-body);font-weight:500}
+.morefmt summary::-webkit-details-marker{display:none}
+.morefmt .mf-count{font-weight:400;font-size:var(--step-small);color:var(--muted);margin-right:auto}
+.morefmt .more-body{padding:0 18px 20px;display:grid;gap:18px}
+.morefmt .text{background:var(--bg)}
+.morefmt .xg{display:grid;gap:10px}
+.morefmt .xg h5{font-size:var(--step-small);font-weight:500;color:var(--muted);letter-spacing:.02em;text-transform:uppercase;margin:0}
+.morefmt .chip{background:var(--bg)}
+.morefmt .chip.on{background:var(--accent)}
+.morefmt .chip .ext{font-size:.75em;color:var(--muted);margin-left:6px;letter-spacing:.02em}
+.morefmt .chip.on .ext{color:color-mix(in srgb,var(--accent-ink) 70%,transparent)}
 /* file dal computer */
 .filebar{display:flex;align-items:center;gap:14px 18px;flex-wrap:wrap;margin-top:14px;max-width:44rem}
 .filebar .btn svg{width:18px;height:18px}
@@ -470,6 +483,17 @@ footer{padding:40px var(--m) 130px;font-size:var(--step-small);color:var(--muted
             <div class="label">Professionale <span>per montaggio e Resolume</span></div>
             <div class="chips" id="proFormats"></div>
             <p class="hint" id="proHint" hidden>ProRes e HAP pesano molto. Durante la conversione vedi percentuale e tempo rimanente.</p>
+          </div>
+          <div id="moreBox" hidden>
+            <details class="morefmt" id="moreFmt">
+              <summary><span class="mf-title">Tutti i formati</span><span class="mf-count" id="moreCount"></span><span class="g-chev" aria-hidden="true"></span></summary>
+              <div class="more-body">
+                <input class="text" id="fmtSearch" type="search" placeholder="Cerca: DNxHR, AC-3, GIF, DPX, WMA…" autocomplete="off" spellcheck="false" aria-label="Cerca un formato">
+                <div id="moreGroups"></div>
+                <p class="hint" id="moreEmpty" hidden>Nessun formato con questo nome.</p>
+              </div>
+            </details>
+            <p class="hint" id="xfHint" hidden></p>
           </div>
           <div id="qBox">
             <div class="label" id="qLabel">Qualità</div>
@@ -725,6 +749,13 @@ const CH_LABEL = {1:'Mono',2:'Stereo',3:'2.1',4:'4.0 Quad',5:'5.0',6:'5.1',7:'6.
 const CODEC_LABEL = { aac:'AAC', ac3:'Dolby Digital', eac3:'Dolby Digital Plus', opus:'Opus', vorbis:'Vorbis', flac:'FLAC', mp3:'MP3', dts:'DTS', truehd:'Dolby TrueHD', alac:'ALAC', pcm:'PCM' };
 const chName = n => CH_LABEL[n] || `${n} canali`;
 const STEREO_ONLY = ['mp3','avi'];
+// formati in più dal motore (catalogo in formati.ts): video professionali e broadcast, rari, sequenze, audio, immagini
+let XF_LIST = [], XF = {};
+const isLossless = f => LOSSLESS.includes(f) || !!XF[f]?.lossless;
+const maxChOf = f => XF[f]?.maxCh || (STEREO_ONLY.includes(f) ? 2 : 99);
+const fmtLabel = f => LABEL[f] || XF[f]?.label || String(f).toUpperCase();
+const modeFormats = m => [...(m === 'video' ? ALL_VIDEO() : FORMATS[m]), ...XF_LIST.filter(x => x.mode === m).map(x => [x.k, x.label, x.sub])];
+const XF_GROUP_ORDER = ['Professionale','Broadcast','Web e moderni','Vecchi formati','Sequenze di immagini','Studio','Cinema e broadcast','Altri formati','Immagini'];
 const FPS_OPTS = [['orig','Originale','Come la sorgente'],['24','24','Cinema'],['25','25','PAL, Europa'],['30','30','Web'],['50','50','PAL fluido'],['60','60','Web fluido']];
 const RES_OPTS = [['orig','Originale','Come la sorgente'],['1080','1080p','1920 × 1080'],['2160','4K','3840 × 2160'],['custom','Su misura','Ledwall, schermi']];
 const LOUD_OPTS = [['off','Spento','Volume originale'],['-14','−14 LUFS','Streaming e social'],['-16','−16 LUFS','Podcast e voce'],['-23','−23 LUFS','Broadcast EBU R128']];
@@ -799,6 +830,7 @@ async function checkStatus() {
   try { s = await api('/api/status'); } catch { return setTimeout(checkStatus, 2000); }
   const wasReady = STATUS.ready;
   STATUS = s; PRO_OK = s.pro || [];
+  if (s.xf) { XF_LIST = s.xf; XF = Object.fromEntries(s.xf.map(x => [x.k, x])); s.xf.forEach(x => { LABEL[x.k] = x.label; }); }
   $('#ver').textContent = s.ytdlp ? ` Motore yt-dlp ${s.ytdlp}.` : '';
   $('#setupBox').hidden = !!s.ready;
   if (!s.ready) {
@@ -911,7 +943,7 @@ function chip(value, label, small, on, disabled, extraClass = '') {
 }
 function setMode(m, render = true) {
   S.mode = m;
-  const list = m === 'video' ? ALL_VIDEO() : FORMATS[m];
+  const list = modeFormats(m);
   if (!list.some(f => f[0] === S.format)) S.format = list[0][0];
   setSeg($('#mode'), m);
   if (render) renderOptions();
@@ -923,6 +955,7 @@ function renderOptions() {
   $('#proBox').hidden = !video;
   $('#proFormats').innerHTML = PRO_FORMATS.map(([v,l,s]) => chip(v,l,PRO_OK.includes(v)?s:'Non disponibile',v===S.format,!PRO_OK.includes(v))).join('');
   $('#proHint').hidden = !PRO_KEYS.includes(S.format);
+  renderMoreFormats();
   $('#aspectBox').hidden = !video;
   // con la misura su misura le proporzioni le decide la misura
   if (custom) S.aspect = 'orig';
@@ -975,13 +1008,14 @@ function renderOptions() {
   $('#stemHint').innerHTML = `Un file per ogni traccia scelta, nel formato selezionato. Serve qualche minuto per canzone.${STATUS.stemsReady ? '' : ' <b>La prima volta prepara il motore</b> (circa 1 GB nella cartella di Brsket, una volta sola).'}`;
   $('#sepHint').hidden = S.separate !== 'vocals';
   $('#sepHint').innerHTML = `Crea due file: la sola voce e la sola base, con un modello specializzato sulla voce.${STATUS.separator ? '' : ' La prima volta prepara il motore (circa 350 MB, una volta sola).'}`;
-  $('#thumbToggle').hidden = frame || local || (video && (PRO_KEYS.includes(S.format) || S.format === 'mov' || S.aspect !== 'orig' || S.res !== 'orig' || S.fps !== 'orig')) || (audio && S.separate !== 'none');
+  $('#thumbToggle').hidden = frame || local || !!XF[S.format] || (video && (PRO_KEYS.includes(S.format) || S.format === 'mov' || S.aspect !== 'orig' || S.res !== 'orig' || S.fps !== 'orig')) || (audio && S.separate !== 'none');
   $('#trimBox').hidden = batch || frame;
   $('#qBox').hidden = frame;
   renderFrameBox();
 
   // volume uniforme (non con la separazione)
-  $('#loudBox').hidden = frame || (audio && S.separate !== 'none');
+  const noAud = !!XF[S.format]?.noAudio;
+  $('#loudBox').hidden = frame || noAud || (audio && S.separate !== 'none');
   if (!$('#loudBox').hidden) {
     $('#loudChips').innerHTML = LOUD_OPTS.map(([v,l,s]) => chip(v,l,s,v===S.loud)).join('');
     $('#loudHint').hidden = S.loud === 'off';
@@ -993,7 +1027,7 @@ function renderOptions() {
   const tracks = S.info?.tracks || [];
   const multi = tracks.filter(t => t.channels > 2);
   const sepOn = audio && S.separate !== 'none';
-  $('#chBox').hidden = sepOn || frame;
+  $('#chBox').hidden = sepOn || frame || noAud;
   if (!$('#chBox').hidden) {
     const srcOf = n => tracks.find(t => t.channels === n);
     const codecs = t => t.codecs.map(c => CODEC_LABEL[c] || c.toUpperCase()).join(', ');
@@ -1001,13 +1035,15 @@ function renderOptions() {
     const opts = [[1, 'Da qualsiasi traccia'], [2, srcOf(2) ? (codecs(srcOf(2)) || 'Originale') : (up ? 'Originale' : 'Ridotto dal multicanale')],
       ...(up ? [[6, 'Creato dallo stereo'], [8, 'Creato dallo stereo']] : multi.map(t => [t.channels, codecs(t) || `${t.channels} canali`]))];
     if (!opts.some(o => o[0] === S.channels)) S.channels = 2;
-    const stereoOnly = STEREO_ONLY.includes(S.format);
-    if (stereoOnly && S.channels > 2) S.channels = 2;
+    const maxCh = maxChOf(S.format), stereoOnly = maxCh <= 2;
+    if (S.channels > maxCh) S.channels = maxCh >= 6 ? 6 : 2;
     const what = local ? 'questo file' : 'questo video';
     $('#chSub').textContent = batch ? (local ? 'per tutti i file' : 'per tutti i link') : local && tracks.length && tracks.at(-1).channels === 1 ? `${what} ha l’audio mono` : up ? `${what} ha l’audio stereo` : `le tracce di ${what}`;
-    $('#channels').innerHTML = opts.map(([n, sub]) => chip(String(n), chName(n), sub, n === S.channels, n > 2 && stereoOnly)).join('');
+    $('#channels').innerHTML = opts.map(([n, sub]) => chip(String(n), chName(n), sub, n === S.channels, n > maxCh)).join('');
     let hint = '';
-    if (stereoOnly) hint = `${LABEL[S.format]} supporta al massimo lo stereo: per 5.1 e 7.1 scegli ${video ? 'MP4, MOV, MKV o un formato professionale' : 'M4A, ALAC, FLAC, WAV, Opus o OGG'}.`;
+    if (maxCh === 1) hint = `${fmtLabel(S.format)} è sempre mono.`;
+    else if (stereoOnly) hint = `${fmtLabel(S.format)} supporta al massimo lo stereo: per 5.1 e 7.1 scegli ${video ? 'MP4, MOV, MKV o un formato professionale' : 'M4A, ALAC, FLAC, WAV, Opus o OGG'}.`;
+    else if (maxCh < 8 && S.channels <= maxCh && opts.some(o => o[0] > maxCh)) hint = `${fmtLabel(S.format)} arriva al massimo al ${chName(maxCh)}.`;
     else if (up && S.channels > 2) hint = `${local ? 'Questo file' : 'Questo video'} ha solo l’audio stereo: Brsket crea il ${chName(S.channels)} distribuendo lo stereo su tutti i canali (upmix).`;
     $('#chHint').hidden = !hint; $('#chHint').textContent = hint;
   } else S.channels = 2;
@@ -1023,12 +1059,44 @@ function renderOptions() {
       hs.map(h => chip(String(h), qLabel(h), h>=2160?'Ultra HD':h>=720?'HD':'', S.quality===String(h))).join('');
   } else if (audio) {
     $('#qLabel').textContent = 'Qualità audio';
-    $('#quality').innerHTML = LOSSLESS.includes(S.format)
+    const xa = XF[S.format];
+    $('#quality').innerHTML = isLossless(S.format)
       ? chip('x','Originale','Senza perdita',true,true)
+      : xa && !xa.aBr ? chip('x','Automatica','Decisa dal formato',true,true)
       : BITRATES.map(([v,l,s]) => chip(v,l,s,v===S.bitrate)).join('');
   }
   updateSummary();
 }
+// ---------- tutti i formati: gruppi, ricerca, disponibilità ----------
+let fmtQuery = '';
+function renderMoreFormats() {
+  const list = XF_LIST.filter(x => x.mode === S.mode);
+  $('#moreBox').hidden = !list.length;
+  if (!list.length) return;
+  const q = fmtQuery.trim().toLowerCase();
+  const match = x => !q || [x.label, x.sub, x.ext, x.group, x.k].join(' ').toLowerCase().includes(q);
+  const groups = XF_GROUP_ORDER.map(g => [g, list.filter(x => x.group === g && match(x))]).filter(([, l]) => l.length);
+  $('#moreGroups').innerHTML = groups.map(([g, l]) => `<div class="xg"><h5>${esc(g)}</h5><div class="chips">${l.map(x =>
+    chip(x.k, `${esc(x.label)}<span class="ext">.${esc(x.ext)}${x.seq ? ' …' : ''}</span>`, x.ok ? esc(x.sub) : 'Non disponibile su questo computer', x.k === S.format, !x.ok)).join('')}</div></div>`).join('');
+  $('#moreEmpty').hidden = !!groups.length;
+  const sel = XF[S.format];
+  $('#moreCount').textContent = sel ? `scelto: ${sel.label}` : `${list.filter(x => x.ok).length} formati${S.mode === 'video' ? ' professionali, broadcast, web, rari e sequenze' : S.mode === 'audio' ? ' da studio, cinema e rari' : ' immagine'}`;
+  if (sel && !$('#moreFmt').open && !renderMoreFormats.userClosed) $('#moreFmt').open = true;
+  let hint = '';
+  if (sel) {
+    if (sel.seq) hint = 'Esce una cartella con un\'immagine per ogni fotogramma (nome_000001, nome_000002…), senza audio.';
+    else if (sel.noAudio) hint = `${sel.label} non ha audio${sel.fps ? `: esce a ${sel.fps} fps` : ''}${sel.maxW ? ` e largo al massimo ${sel.maxW} pixel, se non scegli tu frame rate e risoluzione` : ''}.`;
+    else if (sel.size) hint = `${sel.label} esce sempre ${sel.size[0]} × ${sel.size[1]}${sel.fps ? ` a ${sel.fps} fps` : ''}, se non scegli tu risoluzione e frame rate.`;
+    else if (sel.maxW) hint = `Se non scegli tu la risoluzione, esce largo al massimo ${sel.maxW} pixel.`;
+    if (sel.heavy) hint += (hint ? ' ' : '') + 'Pesa molto o richiede una conversione lunga: vedi percentuale e tempo rimanente.';
+  }
+  $('#xfHint').hidden = !hint; $('#xfHint').textContent = hint;
+}
+$('#moreGroups').onclick = e => { const b = e.target.closest('.chip'); if (!b || b.disabled) return; S.format = b.dataset.v; renderOptions(); };
+$('#fmtSearch').oninput = () => { fmtQuery = $('#fmtSearch').value; renderMoreFormats(); };
+$('#moreFmt').addEventListener('toggle', () => { renderMoreFormats.userClosed = !$('#moreFmt').open; });
+$('#formats').addEventListener('click', () => { renderMoreFormats.userClosed = false; });
+
 // ---------- fotogramma o copertina ----------
 function coverAvailable() { const i = S.info || {}; return i.batch ? !i.local : i.local ? !!i.cover : !!i.thumbnail; }
 function renderFrameBox() {
@@ -1098,11 +1166,11 @@ $$('.steps [data-step]').forEach(b => b.onclick = () => {
 function stemCount() { return S.separate === 'stems' ? S.stems.size : S.separate === 'vocals' ? 2 : 1; }
 function updateSummary() {
   if (!S.info) return;
-  const f = (S.mode==='video' ? ALL_VIDEO() : FORMATS[S.mode]).find(x => x[0]===S.format)[1];
+  const f = (modeFormats(S.mode).find(x => x[0]===S.format) || [0, fmtLabel(S.format)])[1];
   let q;
   if (S.mode === 'frame') q = S.frameKind === 'cover' ? 'copertina originale' : `fotogramma a ${fmtTimeF(S.frameT)}`;
   else if (S.mode === 'video') q = S.res === 'custom' ? '' : S.aspect !== 'orig' ? `${S.aspect} ${S.fit==='blur'?'sfondo sfocato':'ritaglio'}` : S.res !== 'orig' ? '' : S.quality==='best' ? (S.info.local ? 'risoluzione originale' : 'qualità migliore') : qLabel(+S.quality);
-  else q = (LOSSLESS.includes(S.format) ? 'lossless' : `${S.bitrate} kbps`) + (S.separate==='vocals' ? ', voce e base' : S.separate==='stems' ? `, ${S.stems.size} tracce` : '');
+  else q = (isLossless(S.format) ? 'lossless' : XF[S.format] && !XF[S.format].aBr ? 'qualità del formato' : `${S.bitrate} kbps`) + (S.separate==='vocals' ? ', voce e base' : S.separate==='stems' ? `, ${S.stems.size} tracce` : '');
   const t = trimValues();
   const cut = t && !t.error ? `, da ${fmtTime(t.start||0)} a ${t.end!=null?fmtTime(t.end):'fine'}` : '';
   const chTxt = !$('#chBox').hidden && S.channels !== 2 ? `, audio ${chName(S.channels)}` : '';
@@ -1125,7 +1193,7 @@ function renderGroups(f, t) {
   const video = S.mode === 'video';
   if (S.mode === 'frame') $('#gFormatSum').textContent = `${S.frameKind === 'cover' ? 'Copertina' : 'Fotogramma'} ${f}${S.frameKind === 'cover' ? '' : `, a ${fmtTimeF(S.frameT)}`}`;
   else {
-    const fq = video ? (S.quality === 'best' ? (S.info?.local ? 'risoluzione originale' : 'qualità migliore') : qLabel(+S.quality)) : (LOSSLESS.includes(S.format) ? 'lossless' : `${S.bitrate} kbps`);
+    const fq = video ? (S.quality === 'best' ? (S.info?.local ? 'risoluzione originale' : 'qualità migliore') : qLabel(+S.quality)) : (isLossless(S.format) ? 'lossless' : XF[S.format] && !XF[S.format].aBr ? 'qualità del formato' : `${S.bitrate} kbps`);
     $('#gFormatSum').textContent = `${video ? 'Video' : 'Solo audio'} ${f}, ${fq}`;
   }
   const img = [S.res === 'custom' ? '' : S.aspect !== 'orig' ? `${S.aspect} ${S.fit === 'blur' ? 'sfondo sfocato' : 'ritaglio'}` : 'Proporzioni originali',
@@ -1161,10 +1229,11 @@ function estimate() {
   const i = S.info; if (!i || i.batch || !i.duration || S.mode === 'frame') return null;
   const d = i.duration, t = trimValues();
   const len = t && !t.error ? Math.max(1, (t.end ?? d) - (t.start || 0)) : d;
-  if (S.mode === 'audio') return (LOSSLESS_KBPS[S.format] || +S.bitrate) * 125 * len * stemCount();
+  const xe = XF[S.format];
+  if (S.mode === 'audio') return (LOSSLESS_KBPS[S.format] || (xe && !xe.aBr ? xe.kbps : 0) || (xe?.aBr ? Math.max(+S.bitrate, xe.kbps && S.channels > 2 ? xe.kbps : 0) : 0) || +S.bitrate) * 125 * len * stemCount();
   const h = S.quality === 'best' ? i.heights[0] : +S.quality;
   const custom = S.res === 'custom' && customOk(), fixed = S.res === '1080' || S.res === '2160';
-  const pro = PRO_KEYS.includes(S.format), reshape = S.aspect !== 'orig' || custom || fixed;
+  const pro = PRO_KEYS.includes(S.format) || !!xe, reshape = S.aspect !== 'orig' || custom || fixed;
   if (i.local && !pro && !reshape && S.fps === 'orig' && i.size) return i.size * len / d;
   if (pro || reshape) {
     let w, hh;
@@ -1172,10 +1241,11 @@ function estimate() {
     if (custom) [w, hh] = [S.resW, S.resH];
     else if (S.aspect !== 'orig') [w, hh] = ASPECT_DIMS[S.aspect].map(n => n * k);
     else if (fixed) [w, hh] = S.res === '2160' ? [3840, 2160] : [1920, 1080];
-    else { hh = h || 1080; w = Math.round(hh * (i.ratio || 16/9)); }
+    else if (xe?.size) [w, hh] = xe.size;
+    else { hh = h || 1080; w = Math.round(hh * (i.ratio || 16/9)); if (xe?.maxW && w > xe.maxW) { hh = Math.round(hh * xe.maxW / w); w = xe.maxW; } }
     const px = w * hh, fps = i.fps || 30, hd = px / (1920*1080);
-    const vbps = { prores: 220e6*hd*fps/29.97, prores4444: 330e6*hd*fps/29.97, hap: px*4*fps*0.85, hapq: px*8*fps*0.85, webm: 5e6*hd, avi: 10e6*hd }[S.format] ?? 9e6*hd;
-    return (vbps + (pro ? 1.411e6 : 192e3)) / 8 * len;
+    const vbps = xe?.mbps ? xe.mbps * 1e6 * hd * (xe.fps ? +xe.fps : fps) / 25 : { prores: 220e6*hd*fps/29.97, prores4444: 330e6*hd*fps/29.97, hap: px*4*fps*0.85, hapq: px*8*fps*0.85, webm: 5e6*hd, avi: 10e6*hd }[S.format] ?? 9e6*hd;
+    return (vbps + (xe?.noAudio ? 0 : pro ? 1.411e6 : 192e3)) / 8 * len;
   }
   const e = i.est?.[h]; if (!e) return null;
   const v = ['mp4','mov'].includes(S.format) && e.h264 ? e.h264 : e.any;
@@ -1199,9 +1269,10 @@ function currentTokens() {
     taglio: t && !t.error ? `${mmss(t.start||0)}-${t.end!=null?mmss(t.end):'fine'}` : '',
   };
 }
-function extFor() { return PRO_KEYS.includes(S.format) ? 'mov' : S.format === 'alac' ? 'm4a' : S.format; }
+function extFor() { return XF[S.format]?.ext || (PRO_KEYS.includes(S.format) ? 'mov' : S.format === 'alac' ? 'm4a' : S.format); }
 function previewName() {
   const base = buildName(SETTINGS.schema, currentTokens()), ext = extFor();
+  if (XF[S.format]?.seq) return `${base}/${base}_000001.${ext} e seguenti`;
   if (S.mode === 'frame') return `${base} (${S.frameKind === 'cover' ? 'copertina' : `fotogramma ${mmss(S.frameT)}${S.frameT % 1 ? '.' + String(Math.round(S.frameT % 1 * 100)).padStart(2, '0') : ''}`}).${ext}`;
   if (S.mode === 'audio' && S.separate === 'vocals') return `${base} (voce).${ext} e (base)`;
   if (S.mode === 'audio' && S.separate === 'stems') {
@@ -1266,7 +1337,7 @@ function applyPreset(p) {
   for (const k of PRESET_KEYS) if (k in o && k !== 'mode' && k !== 'format') S[k] = o[k];
   if (o.stems) S.stems = new Set(o.stems);
   if (o.mode) { S.prefMode = o.mode; setMode(o.mode, false); }
-  const list = S.mode === 'video' ? ALL_VIDEO() : FORMATS[S.mode];
+  const list = modeFormats(S.mode);
   if (o.format && list.some(f => f[0] === o.format)) S.format = o.format;
   if (PRO_KEYS.includes(S.format) && STATUS.pro && !PRO_OK.includes(S.format)) toast(`${LABEL[S.format]} non è disponibile su questo computer`, 'err');
   renderOptions();
@@ -1459,7 +1530,7 @@ function badges(j) {
     out.push(`<span class="badge">${j.res === 'custom' ? `${j.resW}×${j.resH}` : j.aspect && j.aspect!=='orig' ? j.aspect : j.res === '2160' ? '4K' : j.res === '1080' ? '1080p' : j.quality==='best' ? 'Max' : qLabel(+j.quality)}</span>`);
     if (j.fps && j.fps !== 'orig') out.push(`<span class="badge">${j.fps} fps</span>`);
   }
-  else out.push(`<span class="badge">${LOSSLESS.includes(j.format) ? 'Lossless' : j.bitrate+'k'}</span>`);
+  else out.push(`<span class="badge">${isLossless(j.format) ? 'Lossless' : XF[j.format] && !XF[j.format].aBr ? 'Auto' : j.bitrate+'k'}</span>`);
   if (j.channels && j.channels !== 2) out.push(`<span class="badge">${chName(j.channels)}</span>`);
   if (j.separate === 'vocals') out.push('<span class="badge">Voce + base</span>');
   if (j.separate === 'stems') out.push(`<span class="badge">${(j.stems||[]).length} tracce</span>`);
@@ -1576,12 +1647,12 @@ function buildWaiting([j, k, n]) {
 }
 function buildDone(j) {
   const files = j.files || [], remote = STATUS.remote;
-  const outTxt = j.out ? [j.out.w && j.out.h ? `${j.out.w}×${j.out.h}` : '', j.out.fps ? `${Math.round(j.out.fps * 100) / 100} fps` : '', j.out.ch ? chName(j.out.ch) : ''].filter(Boolean).join(' · ') : '';
+  const outTxt = j.out ? [j.out.w && j.out.h ? `${j.out.w}×${j.out.h}` : '', j.out.frames ? `${j.out.frames} immagini` : '', j.out.fps ? `${Math.round(j.out.fps * 100) / 100} fps` : '', j.out.ch ? chName(j.out.ch) : ''].filter(Boolean).join(' · ') : '';
   const status = j.stage === 'done' ? `<span><span class="status-ok">Pronto</span>${outTxt ? `, ${outTxt}` : ''}${j.size ? `, ${fmtSize(j.size)}` : ''}${j.elapsed ? `, ${fmtTime(j.elapsed)}` : ''}</span>`
     : j.stage === 'cancelled' ? 'Annullato' : `<span class="status-err">${esc(j.error || 'Errore')}</span>`;
   const acts = j.stage === 'done'
     ? `${remote ? '' : `<button class="icon" title="Mostra nella cartella" data-act="reveal" data-id="${j.id}">${ICON.folder}</button>`}
-       ${files.length <= 1 && !NATIVE ? `<button class="icon" title="Salva con il browser" data-act="save" data-id="${j.id}" data-i="0">${ICON.save}</button>` : ''}
+       ${files.length <= 1 && !NATIVE && !files[0]?.folder ? `<button class="icon" title="Salva con il browser" data-act="save" data-id="${j.id}" data-i="0">${ICON.save}</button>` : ''}
        <button class="icon" title="Rimuovi dall'elenco" data-act="remove" data-id="${j.id}">${ICON.x}</button>`
     : `<button class="icon" title="Riprova" data-act="retry" data-id="${j.id}">${ICON.retry}</button>
        <button class="icon" title="Rimuovi" data-act="remove" data-id="${j.id}">${ICON.x}</button>`;
