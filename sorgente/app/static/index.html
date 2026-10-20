@@ -746,6 +746,12 @@ dialog.specs{width:min(860px,calc(100% - 24px))}
       <div class="tokens" id="tokens"></div>
       <p class="preview-name" style="margin-top:12px">Per esempio <b id="schemaPreview"></b></p>
     </section>
+    <section class="local-only" id="hwSec" hidden>
+      <h5>Velocità</h5>
+      <p class="desc">Il Mac ha un chip dedicato al video: converte H.264, HEVC e ProRes molte volte più in fretta e legge più veloce i file di partenza. Se un file non gli va bene, Brsket rifà la conversione nel modo normale da solo.</p>
+      <label class="toggle"><input type="checkbox" id="hwOn"> Usa il chip del Mac per convertire</label>
+      <p class="hint" id="hwHint"></p>
+    </section>
     <section>
       <h5>Notifiche</h5>
       <label class="toggle"><input type="checkbox" id="notify"> <span id="notifyLabel">Avvisami quando un download è pronto</span></label>
@@ -1504,6 +1510,17 @@ addEventListener('drop', e => {
 });
 
 
+
+// ---------- velocità: chip del Mac ----------
+function renderHw() {
+  const av = SETTINGS.hwAvailable || {};
+  const list = [av.h264 && 'H.264', av.hevc && 'HEVC', av.prores && 'ProRes'].filter(Boolean);
+  $('#hwSec').hidden = !list.length;
+  $('#hwOn').checked = SETTINGS.hw !== false;
+  $('#hwHint').textContent = list.length ? `Su questo Mac il chip codifica ${list.join(', ')}.${SETTINGS.hw === false ? ' Spento: le conversioni usano solo il processore.' : ''}` : '';
+}
+$('#hwOn').onchange = async () => { try { SETTINGS = { ...SETTINGS, ...await api('/api/settings', { hw: $('#hwOn').checked }) }; renderHw(); flashSaved(); } catch (e) { toast(e.message, 'err'); } };
+
 // ---------- verifica dei formati (autodiagnosi sul computer) ----------
 let testT = null;
 function renderTest(t) {
@@ -1514,8 +1531,8 @@ function renderTest(t) {
   $('#runTest').disabled = t.running;
   $('#runTest').textContent = t.running ? 'Prova in corso…' : t.total ? 'Ripeti la prova' : 'Prova tutti i formati';
   $('#testSum').innerHTML = t.running ? `Provo ${t.done + 1} di ${t.total}${t.results.at(-1) ? `: ${esc(t.results.at(-1).label)} ${t.results.at(-1).ok ? 'ok' : 'non va'}` : ''}…`
-    : t.total ? `<b>${okN} di ${t.total} formati funzionano</b> su questo computer.${bad.length ? '' : ' Tutto a posto.'}${t.missing?.length ? ` Non disponibili qui: ${t.missing.map(m => esc(m.label)).join(', ')}.` : ''}` : '';
-  $('#testList').innerHTML = bad.map(r => `<li><b>${esc(r.label)}</b> (${r.mode === 'audio' ? 'audio' : r.mode === 'frame' ? 'immagine' : 'video'})<span>${esc(r.err || '')}</span></li>`).join('');
+    : t.total ? `<b>${okN} di ${t.total} formati funzionano</b> su questo computer.${bad.length ? '' : ' Tutto a posto.'}${t.results.some(r => r.hw) ? ` ${t.results.filter(r => r.hw).length} usano il chip del Mac${t.results.some(r => r.fb) ? `, ${t.results.filter(r => r.fb).length} sono tornati al metodo normale (${t.results.filter(r => r.fb).map(r => esc(r.label)).slice(0, 8).join(', ')})` : ''}.` : ''}${t.missing?.length ? ` Non disponibili qui: ${t.missing.map(m => esc(m.label)).join(', ')}.` : ''}` : '';
+  $('#testList').innerHTML = t.results.filter(r => r.ok && r.fb).map(r => `<li><b>${esc(r.label)}</b>: funziona, ma senza il chip<span>${esc(r.fbErr || '')}</span></li>`).join('') + bad.map(r => `<li><b>${esc(r.label)}</b> (${r.mode === 'audio' ? 'audio' : r.mode === 'frame' ? 'immagine' : 'video'})<span>${esc(r.err || '')}</span></li>`).join('');
 }
 async function pollTest() {
   clearTimeout(testT);
@@ -1767,6 +1784,7 @@ function badges(j) {
   if (j.start != null || j.end != null) out.push(`<span class="badge">da ${fmtTime(j.start||0)} a ${j.end!=null?fmtTime(j.end):'fine'}</span>`);
   if (j.loud && j.loud !== 'off') out.push(`<span class="badge">${j.loud.replace('-', '−')} LUFS</span>`);
   if (j.local) out.push('<span class="badge">dal computer</span>');
+  if (j.hw && j.stage === 'done') out.push('<span class="badge">chip del Mac</span>');
   if (j.client) out.push(`<span class="badge">${esc(j.client)}</span>`);
   return out.join('');
 }
@@ -2114,7 +2132,7 @@ async function openSettings(focusSchema) {
   pollTest();
   await loadSettings();
   $('#schema').value = SETTINGS.schema; $('#notify').checked = !!SETTINGS.notify;
-  renderSchemaUI(); renderLan(); renderCookies();
+  renderSchemaUI(); renderLan(); renderCookies(); renderHw();
   $('#settings').showModal();
   if (focusSchema) $('#schema').focus();
 }

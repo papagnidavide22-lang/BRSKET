@@ -58,7 +58,7 @@ const rm = async (p?: string | null) => { if (p) try { await Deno.remove(p, { re
 
 // ---------- impostazioni ----------
 type Preset = { name: string; opts: Record<string, unknown> };
-type Settings = { schema: string; notify: boolean; lan: boolean; token: string; clients: string[]; cookies: string; presets?: Preset[] };
+type Settings = { schema: string; notify: boolean; lan: boolean; token: string; clients: string[]; cookies: string; presets?: Preset[]; hw?: boolean };
 const DEFAULTS: Settings = { schema: "{titolo}_{taglio}", notify: true, lan: false, token: "", clients: [], cookies: "" };
 // preset di partenza (si possono cancellare: dopo restano quelli scelti)
 const DEFAULT_PRESETS: Preset[] = [
@@ -116,6 +116,7 @@ async function detectPro() {
     const r = await new Deno.Command(FFMPEG, { args: ["-hide_banner", "-encoders"], stdout: "piped", stderr: "null" }).output();
     const list = new TextDecoder().decode(r.stdout);
     hwH264 = MAC && /\sh264_videotoolbox\s/.test(list);
+    detectVT(list);
     proAvailable = Object.entries(PRO).filter(([, v]) => new RegExp(`\\s${v.encoder}\\s`).test(list)).map(([k]) => k);
     const mx = await new Deno.Command(FFMPEG, { args: ["-hide_banner", "-muxers"], stdout: "piped", stderr: "null" }).output();
     ENCODERS = list;
@@ -378,7 +379,83 @@ function ytdlpArgs(j: AnyJob): string[] {
   return a;
 }
 
+// ---------- chip del Mac (VideoToolbox): H.264, HEVC e ProRes codificati e decodificati in hardware ----------
+// Le conversioni restano scritte "in software" (libx264, libx265, prores_ks); qui le giro sul chip quando si può.
+// Se il chip non ce la fa (misura strana, formato non supportato) la stessa conversione riparte in software.
+const VT = { h264: false, hevc: false, prores: false };
+const FORCE_HW = Deno.env.get("SCARICA_FORCE_HW") === "1";   // solo per le prove: finge di avere il chip
+function detectVT(list: string) {
+  VT.h264 = (MAC || FORCE_HW) && /\sh264_videotoolbox\s/.test(list) || FORCE_HW;
+  VT.hevc = (MAC || FORCE_HW) && /\shevc_videotoolbox\s/.test(list) || FORCE_HW;
+  VT.prores = (MAC || FORCE_HW) && /\sprores_videotoolbox\s/.test(list) || FORCE_HW;
+}
+const vtRefused = new Set<string>();   // combinazioni che il chip ha rifiutato (non riprovo a ogni file)
+const hwOn = () => settings.hw !== false && (VT.h264 || VT.hevc || VT.prores);
+const PRORES_VT = ["proxy", "lt", "standard", "hq", "4444", "xq"];
+function accel(args: string[]): string[][] | null {
+  const i = args.indexOf("-c:v");
+  if (i < 0) return null;
+  const enc = args[i + 1];
+  const a = [...args];
+  const take = (k: string) => { const x = a.indexOf(k); if (x < 0) return null; const v = a[x + 1]; a.splice(x, 2); return v; };
+  const setPix = (from: Record<string, string>, def: string) => { const x = a.indexOf("-pix_fmt"); const cur = x >= 0 ? a[x + 1] : ""; const to = from[cur] || def; if (x >= 0) a[x + 1] = to; else a.push("-pix_fmt", to); };
+  if (enc === "libx264" && VT.h264) {
+    const crf = Number(take("-crf") ?? 18); take("-preset"); take("-tune"); take("-x264-params"); take("-level");
+    a[a.indexOf("-c:v") + 1] = "h264_videotoolbox";
+    a.push("-q:v", String(Math.max(35, Math.min(80, Math.round(110 - crf * 2.4)))), "-allow_sw", "1");
+    setPix({}, "yuv420p");
+  } else if (enc === "libx265" && VT.hevc) {
+    const crf = Number(take("-crf") ?? 22); take("-preset"); take("-x265-params");
+    a[a.indexOf("-c:v") + 1] = "hevc_videotoolbox";
+    const ten = a[a.indexOf("-pix_fmt") + 1] === "yuv420p10le";
+    a.push("-q:v", String(Math.max(35, Math.min(80, Math.round(112 - crf * 2.3)))), "-allow_sw", "1");
+    if (ten) { setPix({}, "p010le"); a.push("-profile:v", "main10"); } else setPix({}, "yuv420p");
+  } else if (enc === "prores_ks" && VT.prores) {
+    const prof = Number(take("-profile:v") ?? 3); take("-vendor"); take("-quant_mat"); take("-bits_per_mb");
+    a[a.indexOf("-c:v") + 1] = "prores_videotoolbox";
+    a.push("-profile:v", PRORES_VT[prof] || "hq");
+    setPix({}, prof >= 4 ? "ayuv64le" : "p210le");
+    // il chip accetta solo alcuni formati di pixel: provo dal migliore (con trasparenza) al più semplice
+    const pixes = prof >= 4 ? ["ayuv64le", "p416le", "p410le", "nv24"] : ["p210le", "p216le", "nv16", "uyvy422"];
+    return pixes.map((px) => { const v = withDecode(a); v[v.lastIndexOf("-pix_fmt") + 1] = px; return v; });
+  } else if (enc === "copy" || !enc) return null;   // altri codificatori (HAP, DNxHR…): il chip decodifica soltanto
+  return [withDecode(a)];
+}
+// decodifica col chip anche il file di partenza (H.264, HEVC, ProRes): i filtri lavorano comunque come prima
+function withDecode(args: string[]): string[] {
+  const a = [...args];
+  const inp = a.indexOf("-i");
+  if (inp >= 0 && !a.includes("-hwaccel")) {
+    let k = inp; while (k > 0 && ["-ss", "-t", "-to", "-user_agent", "-headers"].includes(a[k - 2])) k -= 2;
+    a.splice(k, 0, "-hwaccel", "videotoolbox");
+  }
+  return a;
+}
 async function runProc(j: AnyJob, cmd: string, args: string[], onLine: (l: string) => void, env = ENV): Promise<[boolean, string]> {
+  if (j._cancel) return [false, ""];
+  if (cmd === FFMPEG && hwOn() && !j._noHw) {
+    const variants = accel(args);
+    // codificatore e profilo (es. prores_videotoolbox 4444): se il chip li ha già rifiutati non riprovo
+    const key = variants ? (() => { const v = variants[0], i = v.indexOf("-c:v"), p = v.indexOf("-profile:v"); return `${v[i + 1]}|${p >= 0 ? v[p + 1] : ""}`; })() : "";
+    if (variants && !vtRefused.has(key)) {
+      let last = "";
+      for (const h of variants) {
+        const r = await runOnce(j, cmd, h, onLine, env);
+        if (r[0] || j._cancel) { j.hw = true; return r; }
+        last = r[1].trim().split("\n").filter((l) => l.trim() && !/^\s*(Stream|Input|Output|Metadata|Duration|encoder|handler_name|vendor_id|creation_time|major_brand|minor_version|compatible_brands|timecode)\b/i.test(l)).slice(-2).join(" | ").slice(0, 300) || last;
+      }
+      j._vtKey = key;   // lo segno come rifiutato solo se poi in software va: allora era davvero il chip
+      log("chip del Mac non riuscito, rifaccio in software:", key, last);
+      j._hwFallback = true; j._hwErr = last || "il chip non accetta questo formato"; j.hw = false;
+    } else if (variants && vtRefused.has(key)) {
+      j._hwFallback = true; j._hwErr = "il chip di questo Mac non lo supporta: uso il processore"; j.hw = false;
+    }
+  }
+  const r = await runOnce(j, cmd, args, onLine, env);
+  if (j._vtKey) { if (r[0]) vtRefused.add(String(j._vtKey)); delete j._vtKey; }
+  return r;
+}
+async function runOnce(j: AnyJob, cmd: string, args: string[], onLine: (l: string) => void, env = ENV): Promise<[boolean, string]> {
   if (j._cancel) return [false, ""];
   const proc = new Deno.Command(cmd, { args, env, stdout: "piped", stderr: "piped" }).spawn();
   j._proc = proc;
@@ -472,8 +549,10 @@ async function fixVideo(j: AnyJob, src: string): Promise<boolean> {
   const run = (hw: boolean) => runProc(j, FFMPEG, ["-hide_banner", "-y", "-nostats", "-progress", "pipe:1", "-i", src,
     "-map", "0:v:0", "-map", "0:a?", ...vf, ...vcodec(hw), ...audio, "-map_metadata", "0",
     ...(ext === "mp4" || ext === "mov" ? ["-movflags", "+faststart"] : []), out], ffmpegProgress(j, "finish", info.duration));
-  let [ok, err] = await run(hwH264);
-  if (!ok && hwH264 && !j._cancel) { log("videotoolbox non riuscito, uso libx264"); [ok, err] = await run(false); }
+  j._noHw = true;   // qui il chip lo scelgo io (con il suo ritorno al software)
+  let [ok, err] = await run(hwH264 && settings.hw !== false);
+  j._noHw = false;
+  if (!ok && hwH264 && settings.hw !== false && !j._cancel) { log("videotoolbox non riuscito, uso libx264"); j._noHw = true; [ok, err] = await run(false); j._noHw = false; }
   j.note = null;
   if (!ok || j._cancel) { await rm(out); return j._cancel ? false : fail(j, `Conversione non riuscita. ${err.trim().split("\n").pop()?.slice(0, 160) || ""}`); }
   await rm(src);
@@ -1052,7 +1131,7 @@ async function runFrame(j: AnyJob): Promise<boolean> {
 // ---------- autodiagnosi: prova ogni formato con l'FFmpeg di questo computer ----------
 // Crea un breve video di prova (1080p, 25 fps, audio 5.1) e un audio stereo, li converte in tutti i formati
 // con lo stesso percorso delle conversioni vere, poi controlla che ogni file si apra e si legga fino in fondo.
-type TestRes = { k: string; label: string; mode: string; group: string; ok: boolean; err?: string; ms: number };
+type TestRes = { k: string; label: string; mode: string; group: string; ok: boolean; err?: string; ms: number; hw?: boolean; fb?: boolean; fbErr?: string };
 const selftest = { running: false, done: 0, total: 0, results: [] as TestRes[], missing: [] as { k: string; label: string; mode: string }[], at: 0 };
 const BASE_FORMATS: [string, string][] = [["mp4", "video"], ["mov", "video"], ["mkv", "video"], ["webm", "video"], ["avi", "video"],
   ["prores", "video"], ["prores4444", "video"], ["hap", "video"], ["hapq", "video"],
@@ -1105,7 +1184,7 @@ async function runSelftest() {
         else { const e = await decodeOk(out, k); if (e) res.err = `il file non si legge bene: ${e}`; else res.ok = true; }
         for (const f of j._files || []) await rm(f);
       } catch (e) { res.err = String(e instanceof Error ? e.message : e).slice(0, 200); }
-      res.ms = Date.now() - t0;
+      res.ms = Date.now() - t0; res.hw = !!j.hw; res.fb = !!j._hwFallback; if (j._hwErr) res.fbErr = String(j._hwErr);
       selftest.results.push(res); selftest.done++;
       if (!res.ok) log(`autodiagnosi: ${k} non funziona: ${res.err}`);
     }
@@ -1679,6 +1758,7 @@ async function route(req: Request, remote = false): Promise<Response> {
       if (typeof b.notify === "boolean") settings.notify = b.notify;
       if (typeof b.lan === "boolean") { settings.lan = b.lan; setLan(b.lan); }
       if (typeof b.cookies === "string") settings.cookies = COOKIE_BROWSERS.includes(b.cookies) ? b.cookies : "";
+      if (typeof b.hw === "boolean") settings.hw = b.hw;
       if (b.newToken) settings.token = String(Math.floor(100000 + Math.random() * 900000));
       if (Array.isArray(b.presets)) {
         settings.presets = b.presets.slice(0, 40).filter((x: Preset) => x && typeof x.name === "string" && x.name.trim() && x.opts && typeof x.opts === "object")
@@ -1687,6 +1767,7 @@ async function route(req: Request, remote = false): Promise<Response> {
       await saveSettings();
     }
     return json({ schema: settings.schema, notify: settings.notify, lan: settings.lan, clients: settings.clients, cookies: settings.cookies, presets: settings.presets,
+      hw: settings.hw !== false, hwAvailable: { ...VT },
       lanUrl: settings.lan && !remote ? lanUrl() : null, lanActive: !!lanServer, today: today() });
   }
   if (p === "/api/playlist" && m === "POST") {

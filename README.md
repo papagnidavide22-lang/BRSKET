@@ -9,6 +9,11 @@ Scarica video e audio da YouTube, Vimeo, Instagram e altri siti, nel formato che
 
 Poi Brsket si aggiorna da sola.
 
+## Novità della 7.4
+- **Conversioni con il chip del Mac**: H.264, HEVC (anche 10 bit) e ProRes (Proxy, LT, 422, HQ, 4444, 4444 XQ) vengono codificati dal motore video dedicato dei Mac con Apple Silicon, e i file di partenza vengono letti in hardware anche quando si converte in HAP, DNxHR o altri formati. Molto più veloce, soprattutto con i file grandi.
+- Se un file non va bene al chip, Brsket rifà la conversione nel modo normale da solo: non serve fare niente.
+- Si può spegnere in Impostazioni → Velocità. Nei Completati il bollino "chip del Mac" dice quali file l'hanno usato; la Verifica dei formati dice quanti formati lo usano su quel Mac.
+
 ## Novità della 7.3
 - **Scheda tecnica completa, come MediaInfo**: profilo e livello (es. Main@L5), CABAC e fotogrammi di riferimento, struttura del GOP (M e N), modalità frame rate, bit per pixel, dimensione e percentuale di ogni traccia, formato HDR (SMPTE ST 2086, PQ, HLG, Dolby Vision, HDR10+) con primari e luminanza del display di mastering e MaxCLL/MaxFALL, coefficienti matrice, intervallo colore, casella di configurazione del codec.
 - Audio: impostazioni del PCM (little/big endian, signed), ID codec, modalità bitrate, profondità bit e dimensione della traccia.
